@@ -417,8 +417,27 @@ button, input, select, textarea { font-family: inherit; color: inherit; }
 .sidebar-reopen:hover { background: var(--card-hi); }
 
 /* ====================== DOWNED TOKEN ====================== */
-.token.downed { opacity: 0.55; filter: grayscale(0.4); }
-.token .tk-hp.down { color: #e08b7e; border-color: var(--red-deep); }
+.token.downed { opacity: 0.42; filter: grayscale(1); box-shadow: 0 2px 6px rgba(0,0,0,0.5); }
+.token.downed .tk-initial { color: #9a9a92; }
+.token.downed .tk-label { background: rgba(16,18,8,0.7); color: #9a9a92; border-color: #4a4a44; }
+
+/* ====================== TOOLBAR COLLAPSE ====================== */
+.tb-collapse {
+  align-self: center; margin-left: auto;
+  background: var(--card); border: 1px solid var(--line); color: var(--text-dim);
+  border-radius: 6px; cursor: pointer; padding: 6px 10px; font-size: 0.8rem; line-height: 1;
+}
+.tb-collapse:hover { color: var(--green); border-color: var(--green-deep); }
+.toolbar.collapsed { display: none; }
+.toolbar-reopen {
+  position: absolute; top: 6px; right: 10px; z-index: 35;
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--green);
+  border-radius: var(--radius-sm); padding: 6px 12px; cursor: pointer;
+  font-size: 0.76rem; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
+  box-shadow: var(--shadow);
+}
+.toolbar-reopen[hidden] { display: none; }
+.toolbar-reopen:hover { background: var(--card-hi); }
 
 /* ====================== RESPONSIVE ====================== */
 @media (max-width: 720px) {
