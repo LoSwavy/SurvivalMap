@@ -98,6 +98,12 @@
   </div>
 </header>
 
+<!-- ===================== TAB STRIP ===================== -->
+<div class="tab-strip" id="tab-strip"></div>
+
+<!-- ===================== STAGE (board + enemy sidebar) ===================== -->
+<div class="stage" id="stage">
+
 <!-- ===================== BOARD ===================== -->
 <div class="board" id="board">
   <div class="world" id="world">
@@ -112,6 +118,25 @@
     Drag empty space to pan · scroll / pinch to zoom · drag a piece to move it.
   </div>
 </div>
+
+<!-- ===================== ENEMY SIDEBAR ===================== -->
+<aside class="enemy-sidebar" id="enemy-sidebar">
+  <div class="es-head">
+    <h3>Enemies</h3>
+    <button class="es-collapse" id="es-collapse" title="Collapse sidebar">⟩</button>
+  </div>
+  <div class="es-amount">
+    <span class="es-amount-lbl">Amount</span>
+    <button class="amt-btn" id="amt-dec">−</button>
+    <input type="number" id="es-amount" value="5" min="1" />
+    <button class="amt-btn" id="amt-inc">+</button>
+  </div>
+  <div class="enemy-list" id="enemy-list"></div>
+</aside>
+
+</div><!-- /stage -->
+
+<button class="sidebar-reopen" id="sidebar-reopen" hidden>‹ Enemies</button>
 
 <!-- ===================== OBJECTS PANEL ===================== -->
 <aside class="objects-panel" id="objects-panel" hidden>
