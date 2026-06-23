@@ -155,7 +155,8 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     maps: [],          // [{id,name,bg,worldW,worldH,grid,view,pieces,shapes,selected}]
     activeMapId: null,
     seq: 1,
-    sidebarOpen: true,
+    enemiesOpen: true,
+    editorOpen: false,   // info panel stays closed until you open it
     toolbarOpen: true,
   };
   const nextId = () => "o" + (state.seq++) + "_" + Math.random().toString(36).slice(2, 6);
@@ -183,15 +184,15 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   const shapeLayer  = $("#shape-layer");
   const tokenLayer  = $("#token-layer");
   const boardHint   = $("#board-hint");
-  const editor      = $("#editor");
+  const enemiesPanel = $("#enemies-panel");
+  const editorPanel = $("#editor-panel");
   const edTitle     = $("#ed-title");
   const edBody      = $("#ed-body");
+  const edDelete    = $("#ed-delete");
   const objectsPanel = $("#objects-panel");
   const enemyMenu   = $("#enemy-menu");
   const tabStrip    = $("#tab-strip");
-  const sidebar     = $("#enemy-sidebar");
   const enemyList   = $("#enemy-list");
-  const sidebarReopen = $("#sidebar-reopen");
   const toolbar     = $("#toolbar");
   const toolbarReopen = $("#toolbar-reopen");
   const toastEl     = $("#toast");
@@ -205,8 +206,8 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     saveTimer = setTimeout(() => {
       try {
         localStorage.setItem(STORE_KEY, JSON.stringify({
-          maps: state.maps, activeMapId: state.activeMapId,
-          seq: state.seq, sidebarOpen: state.sidebarOpen, toolbarOpen: state.toolbarOpen,
+          maps: state.maps, activeMapId: state.activeMapId, seq: state.seq,
+          enemiesOpen: state.enemiesOpen, editorOpen: state.editorOpen, toolbarOpen: state.toolbarOpen,
         }));
       } catch (e) {
         toast("Couldn't save — map image may be too large for storage.", true);
@@ -243,7 +244,8 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       state.activeMapId = d.activeMapId && state.maps.some(m => m.id === d.activeMapId)
         ? d.activeMapId : state.maps[0].id;
       state.seq = d.seq || 1;
-      state.sidebarOpen = d.sidebarOpen !== false;
+      state.enemiesOpen = d.enemiesOpen !== false;
+      state.editorOpen = d.editorOpen === true;
       state.toolbarOpen = d.toolbarOpen !== false;
     } else {
       // v1 single-board (or fresh) → wrap into one map
@@ -255,7 +257,8 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       state.maps = [m];
       state.activeMapId = m.id;
       state.seq = d?.seq || 1;
-      state.sidebarOpen = true;
+      state.enemiesOpen = true;
+      state.editorOpen = false;
     }
   }
   function load() {
@@ -471,8 +474,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   }
   function deselect() {
     cur().selected = null;
-    editor.hidden = true;
-    renderShapes(); renderTokens(); renderObjects(); renderSidebar();
+    renderShapes(); renderTokens(); renderObjects(); renderSidebar(); openEditor();
   }
   function getSelectedObj() {
     const m = cur();
@@ -480,10 +482,17 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     const arr = m.selected.kind === "piece" ? m.pieces : m.shapes;
     return arr.find(o => o.id === m.selected.id) || null;
   }
+  // Rebuilds the docked Info panel's contents for the current selection.
+  // Does NOT pop the panel open — that's controlled by its header toggle.
   function openEditor() {
     const obj = getSelectedObj();
-    if (!obj) { editor.hidden = true; return; }
-    editor.hidden = false;
+    if (!obj) {
+      edTitle.textContent = "Info";
+      edBody.innerHTML = `<div class="op-empty">Select a piece or overlay to edit it here.</div>`;
+      edDelete.hidden = true;
+      return;
+    }
+    edDelete.hidden = false;
     if (cur().selected.kind === "piece") buildPieceEditor(obj);
     else buildShapeEditor(obj);
   }
@@ -681,16 +690,15 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   }
 
   /* ---------------------------------------------------------
-     ENEMY SIDEBAR
+     RIGHT RAIL PANELS (Enemies + Info) — collapse in place;
+     the header toggle stays put, so open == close location.
      --------------------------------------------------------- */
-  function applySidebar() {
-    sidebar.classList.toggle("collapsed", !state.sidebarOpen);
-    sidebarReopen.hidden = state.sidebarOpen;
+  function applyPanels() {
+    enemiesPanel.classList.toggle("collapsed", !state.enemiesOpen);
+    editorPanel.classList.toggle("collapsed", !state.editorOpen);
   }
-  function setSidebar(open) {
-    state.sidebarOpen = open;
-    applySidebar(); save();
-  }
+  function toggleEnemies() { state.enemiesOpen = !state.enemiesOpen; applyPanels(); save(); }
+  function toggleEditor()  { state.editorOpen = !state.editorOpen;  applyPanels(); save(); }
   function applyToolbar() {
     toolbar.classList.toggle("collapsed", !state.toolbarOpen);
     toolbarReopen.hidden = state.toolbarOpen;
@@ -783,7 +791,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   function switchMap(id) {
     if (id === state.activeMapId) return;
     state.activeMapId = id;
-    editor.hidden = true;
+    openEditor();
     syncGridInputs();
     renderTabs(); renderAll();
     save();
@@ -792,7 +800,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     const m = newMap();
     state.maps.push(m);
     state.activeMapId = m.id;
-    editor.hidden = true;
+    openEditor();
     syncGridInputs();
     renderTabs(); renderAll(); fitView();
     save();
@@ -810,7 +818,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     const idx = state.maps.findIndex(x => x.id === id);
     state.maps.splice(idx, 1);
     if (state.activeMapId === id) state.activeMapId = state.maps[Math.max(0, idx - 1)].id;
-    editor.hidden = true;
+    openEditor();
     syncGridInputs();
     renderTabs(); renderAll(); save();
   }
@@ -1083,9 +1091,10 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   $("#toggle-objects").onclick = () => { objectsPanel.hidden = !objectsPanel.hidden; renderObjects(); };
   $("#objects-close").onclick = () => { objectsPanel.hidden = true; };
 
-  // Editor
-  $("#ed-close").onclick = deselect;
-  $("#ed-delete").onclick = () => {
+  // Rail panels (Enemies + Info) collapse via their headers
+  $("#enemies-toggle").onclick = toggleEnemies;
+  $("#editor-toggle").onclick = toggleEditor;
+  edDelete.onclick = () => {
     const m = cur();
     if (!m.selected) return;
     const { kind, id } = m.selected;
@@ -1094,9 +1103,6 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     deselect(); renderAll(); save();
   };
 
-  // Sidebar
-  $("#es-collapse").onclick = () => setSidebar(false);
-  sidebarReopen.onclick = () => setSidebar(true);
   // Toolbar collapse
   $("#tb-collapse").onclick = () => setToolbar(false);
   toolbarReopen.onclick = () => setToolbar(true);
@@ -1114,7 +1120,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     reader.onload = () => {
       try {
         adopt(JSON.parse(reader.result));
-        applySidebar(); applyToolbar(); syncGridInputs(); renderTabs(); renderAll(); save();
+        applyPanels(); applyToolbar(); syncGridInputs(); renderTabs(); renderAll(); save();
         toast("Map imported.");
       } catch (err) { toast("Import failed — invalid file.", true); }
     };
@@ -1135,7 +1141,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     if (!confirm("Clear everything? All tabs, maps, pieces and overlays are removed.")) return;
     const m = newMap("Map 1");
     state.maps = [m]; state.activeMapId = m.id;
-    editor.hidden = true;
+    openEditor();
     syncGridInputs(); renderTabs(); renderAll(); fitView(); save();
     toast("Board cleared.");
   };
@@ -1217,11 +1223,12 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   load();
   if (!state.maps.length) { const m = newMap("Map 1"); state.maps.push(m); state.activeMapId = m.id; }
   if (!cur()) state.activeMapId = state.maps[0].id;
-  applySidebar();
+  applyPanels();
   applyToolbar();
   renderTabs();
   syncGridInputs();
   renderAll();
+  openEditor();
   const m0 = cur();
   if (!m0.bg && !m0.pieces.length && !m0.shapes.length) fitView();
 })();
