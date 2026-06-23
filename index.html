@@ -123,24 +123,41 @@
   </div>
 </div>
 
-<!-- ===================== ENEMY SIDEBAR ===================== -->
-<aside class="enemy-sidebar" id="enemy-sidebar">
-  <div class="es-head">
-    <h3>Enemies</h3>
-    <button class="es-collapse" id="es-collapse" title="Collapse sidebar">⟩</button>
-  </div>
-  <div class="es-amount">
-    <span class="es-amount-lbl">Amount</span>
-    <button class="amt-btn" id="amt-dec">−</button>
-    <input type="number" id="es-amount" value="1" min="1" />
-    <button class="amt-btn" id="amt-inc">+</button>
-  </div>
-  <div class="enemy-list" id="enemy-list"></div>
+<!-- ===================== RIGHT RAIL (Enemies + Info) ===================== -->
+<aside class="right-rail" id="right-rail">
+
+  <section class="rail-panel" id="enemies-panel">
+    <button class="rail-head" id="enemies-toggle" title="Collapse / expand">
+      <span class="rail-title">Enemies</span>
+      <span class="rail-chevron">▾</span>
+    </button>
+    <div class="rail-body">
+      <div class="es-amount">
+        <span class="es-amount-lbl">Amount</span>
+        <button class="amt-btn" id="amt-dec">−</button>
+        <input type="number" id="es-amount" value="1" min="1" />
+        <button class="amt-btn" id="amt-inc">+</button>
+      </div>
+      <div class="enemy-list" id="enemy-list"></div>
+    </div>
+  </section>
+
+  <section class="rail-panel collapsed" id="editor-panel">
+    <button class="rail-head" id="editor-toggle" title="Collapse / expand">
+      <span class="rail-title" id="ed-title">Info</span>
+      <span class="rail-chevron">▾</span>
+    </button>
+    <div class="rail-body">
+      <div class="ed-body" id="ed-body"></div>
+      <div class="ed-foot">
+        <button class="btn danger-ghost small" id="ed-delete">Delete</button>
+      </div>
+    </div>
+  </section>
+
 </aside>
 
 </div><!-- /stage -->
-
-<button class="sidebar-reopen" id="sidebar-reopen" hidden>‹ Enemies</button>
 
 <!-- ===================== OBJECTS PANEL ===================== -->
 <aside class="objects-panel" id="objects-panel" hidden>
@@ -155,18 +172,6 @@
   <div class="op-section">
     <h4>Overlays</h4>
     <div class="op-list" id="op-shapes"></div>
-  </div>
-</aside>
-
-<!-- ===================== SELECTION EDITOR ===================== -->
-<aside class="editor" id="editor" hidden>
-  <div class="ed-head">
-    <h3 id="ed-title">Edit</h3>
-    <button class="modal-close" id="ed-close">✕</button>
-  </div>
-  <div class="ed-body" id="ed-body"></div>
-  <div class="ed-foot">
-    <button class="btn danger-ghost small" id="ed-delete">Delete</button>
   </div>
 </aside>
 
