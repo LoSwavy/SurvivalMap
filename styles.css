@@ -214,6 +214,21 @@ button, input, select, textarea { font-family: inherit; color: inherit; }
 .token.enemy { border-color: var(--red); }
 .token.player { border-color: var(--blue-cold); }
 .token.selected { box-shadow: 0 0 0 3px var(--green-glow), 0 3px 10px rgba(0,0,0,0.6); }
+/* selected enemy: a small white line around the token */
+.token.enemy.selected { box-shadow: 0 0 0 2px #ffffff, 0 3px 10px rgba(0,0,0,0.6); }
+
+/* brief, subtle cue when an already-hidden enemy is selected */
+.select-pulse {
+  position: absolute; transform: translate(-50%,-50%);
+  border-radius: 50%; border: 2px solid rgba(255,255,255,0.7);
+  pointer-events: none; opacity: 0;
+  animation: selPulse 0.6s ease-out forwards;
+}
+@keyframes selPulse {
+  0%   { opacity: 0;   transform: translate(-50%,-50%) scale(0.55); }
+  35%  { opacity: 0.5; }
+  100% { opacity: 0;   transform: translate(-50%,-50%) scale(1.3); }
+}
 .token .tk-initial {
   font-size: 0.9em; text-shadow: 0 1px 2px rgba(0,0,0,0.7);
   pointer-events: none;
