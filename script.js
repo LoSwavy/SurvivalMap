@@ -1145,7 +1145,59 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     if (e.target.matches("input, textarea, select")) return;
     if ((e.key === "Delete" || e.key === "Backspace") && cur().selected) { e.preventDefault(); $("#ed-delete").click(); }
     else if (e.key === "Escape") { deselect(); closeEnemyMenu(); }
+    else if (e.key === "ArrowRight") { e.preventDefault(); cycleEnemy(1); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); cycleEnemy(-1); }
+    else if (e.key === "v" || e.key === "V") { e.preventDefault(); toggleSelectedVisibility(); }
   });
+
+  /* ---------------------------------------------------------
+     ENEMY CYCLING (arrow keys) + visibility (V)
+     Only cycles enemies currently within the viewport. Visible
+     ones get a white selection ring (see CSS); hidden ones get
+     a brief, subtle pulse at their spot — easy to miss unless
+     you're already watching that part of the map.
+     --------------------------------------------------------- */
+  function enemiesInView() {
+    const m = cur(), v = m.view, r = board.getBoundingClientRect();
+    const x0 = -v.tx / v.scale, y0 = -v.ty / v.scale;
+    const x1 = (r.width - v.tx) / v.scale, y1 = (r.height - v.ty) / v.scale;
+    return m.pieces
+      .filter(p => p.tag === "enemy" && p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1)
+      .sort((a, b) => a.x - b.x || a.y - b.y);
+  }
+  function cycleEnemy(dir) {
+    const list = enemiesInView();
+    if (!list.length) return;
+    const sel = cur().selected;
+    let idx = (sel && sel.kind === "piece") ? list.findIndex(p => p.id === sel.id) : -1;
+    const next = idx === -1
+      ? (dir > 0 ? list[0] : list[list.length - 1])
+      : list[(idx + dir + list.length) % list.length];
+    selectEnemy(next);
+  }
+  function selectEnemy(p) {
+    select("piece", p.id);
+    if (p.hidden) pulseAt(p);
+  }
+  function toggleSelectedVisibility() {
+    const m = cur();
+    if (!m.selected || m.selected.kind !== "piece") return;
+    const p = m.pieces.find(o => o.id === m.selected.id);
+    if (!p || p.tag !== "enemy") return;
+    p.hidden = !p.hidden;
+    renderTokens(); renderSidebar(); save(); openEditor();
+    if (p.hidden) pulseAt(p); // it just vanished — flash where it went
+  }
+  function pulseAt(p) {
+    const size = Math.max(20, cur().grid.size);
+    const el = document.createElement("div");
+    el.className = "select-pulse";
+    el.style.left = p.x + "px";
+    el.style.top = p.y + "px";
+    el.style.width = el.style.height = size + "px";
+    tokenLayer.appendChild(el);
+    setTimeout(() => el.remove(), 700);
+  }
 
   /* ---------------------------------------------------------
      TOAST
