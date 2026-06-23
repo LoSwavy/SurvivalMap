@@ -3,11 +3,14 @@
    Sparse, table-ready map tool. Independent project.
 
    Concept:
-   - A pan/zoom "world" holds a background image, a grid, AoE
-     overlays (cone/sphere/cube/line) and piece tokens.
+   - Multiple map TABS, each a self-contained board with its
+     own background, grid, view, AoE overlays and pieces. Set
+     up the next floor in a second tab and switch when ready.
    - Pieces are tagged Player or Enemy. Enemies carry presets
      (the bestiary below); every object keeps its own color so
      you can track molotovs vs spores, runners vs clickers, etc.
+   - A collapsible Enemies sidebar lists every enemy on the
+     active map: damage, heal and hide/show each one.
    - Everything persists to localStorage and exports as JSON.
    ========================================================= */
 
@@ -136,25 +139,37 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     }
     return null;
   }
+  function hpFromStats(stats) {
+    if (!stats) return 0;
+    const m = stats.match(/HP\s+(\d+)/);
+    return m ? parseInt(m[1], 10) : 0;
+  }
 
   /* ---------------------------------------------------------
-     STATE
+     STATE  — top level holds many maps (tabs)
      --------------------------------------------------------- */
   const FEET_PER_CELL = 5; // standard 5-ft squares; shapes are sized in feet
-  const STORE_KEY = "fieldmap.v1";
+  const STORE_KEY = "fieldmap.v2";
 
   const state = {
-    bg: null,                 // dataURL of background image
-    worldW: 3000,
-    worldH: 2000,
-    grid: { size: 60, offX: 0, offY: 0, color: "#a7bd6e", show: true, snap: true },
-    view: { tx: 60, ty: 60, scale: 1 },
-    pieces: [],               // {id, tag, presetId, name, color, img, hp, x, y}
-    shapes: [],               // {id, type, color, label, x, y, rot, size, width}
-    selected: null,           // {kind:'piece'|'shape', id}
+    maps: [],          // [{id,name,bg,worldW,worldH,grid,view,pieces,shapes,selected}]
+    activeMapId: null,
     seq: 1,
+    sidebarOpen: true,
   };
   const nextId = () => "o" + (state.seq++) + "_" + Math.random().toString(36).slice(2, 6);
+  const cur = () => state.maps.find(m => m.id === state.activeMapId) || state.maps[0];
+
+  function newMap(name) {
+    return {
+      id: nextId(),
+      name: name || ("Map " + (state.maps.length + 1)),
+      bg: null, worldW: 3000, worldH: 2000,
+      grid: { size: 60, offX: 0, offY: 0, color: "#a7bd6e", show: true, snap: true },
+      view: { tx: 60, ty: 60, scale: 1 },
+      pieces: [], shapes: [], selected: null,
+    };
+  }
 
   /* ---------------------------------------------------------
      DOM
@@ -172,43 +187,77 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   const edBody      = $("#ed-body");
   const objectsPanel = $("#objects-panel");
   const enemyMenu   = $("#enemy-menu");
+  const tabStrip    = $("#tab-strip");
+  const sidebar     = $("#enemy-sidebar");
+  const enemyList   = $("#enemy-list");
+  const sidebarReopen = $("#sidebar-reopen");
   const toastEl     = $("#toast");
-  const NS = "http://www.w3.org/2000/svg";
 
   /* ---------------------------------------------------------
-     PERSISTENCE
+     PERSISTENCE  (+ migration from v1 single-board format)
      --------------------------------------------------------- */
   let saveTimer = null;
   function save() {
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       try {
-        const out = {
-          bg: state.bg, worldW: state.worldW, worldH: state.worldH,
-          grid: state.grid, view: state.view,
-          pieces: state.pieces, shapes: state.shapes, seq: state.seq,
-        };
-        localStorage.setItem(STORE_KEY, JSON.stringify(out));
+        localStorage.setItem(STORE_KEY, JSON.stringify({
+          maps: state.maps, activeMapId: state.activeMapId,
+          seq: state.seq, sidebarOpen: state.sidebarOpen,
+        }));
       } catch (e) {
         toast("Couldn't save — map image may be too large for storage.", true);
       }
     }, 250);
   }
+  function normPiece(p) {
+    let hpMax = p.hpMax;
+    if (hpMax == null) hpMax = parseInt(p.hp, 10) || 0;
+    let hp = (p.hp == null || typeof p.hp === "string") ? (parseInt(p.hp, 10)) : p.hp;
+    if (isNaN(hp)) hp = hpMax;
+    return {
+      id: p.id, tag: p.tag, presetId: p.presetId, name: p.name,
+      color: p.color, img: p.img || null,
+      hp, hpMax, hidden: !!p.hidden, x: p.x, y: p.y,
+    };
+  }
+  function normMap(m) {
+    return {
+      id: m.id || nextId(),
+      name: m.name || "Map",
+      bg: m.bg ?? null,
+      worldW: m.worldW || 3000, worldH: m.worldH || 2000,
+      grid: { size: 60, offX: 0, offY: 0, color: "#a7bd6e", show: true, snap: true, ...(m.grid || {}) },
+      view: { tx: 60, ty: 60, scale: 1, ...(m.view || {}) },
+      pieces: (m.pieces || []).map(normPiece),
+      shapes: m.shapes || [],
+      selected: null,
+    };
+  }
+  function adopt(d) {
+    if (d && Array.isArray(d.maps) && d.maps.length) {
+      state.maps = d.maps.map(normMap);
+      state.activeMapId = d.activeMapId && state.maps.some(m => m.id === d.activeMapId)
+        ? d.activeMapId : state.maps[0].id;
+      state.seq = d.seq || 1;
+      state.sidebarOpen = d.sidebarOpen !== false;
+    } else {
+      // v1 single-board (or fresh) → wrap into one map
+      const m = normMap({
+        id: "m1", name: "Map 1",
+        bg: d?.bg ?? null, worldW: d?.worldW, worldH: d?.worldH,
+        grid: d?.grid, view: d?.view, pieces: d?.pieces, shapes: d?.shapes,
+      });
+      state.maps = [m];
+      state.activeMapId = m.id;
+      state.seq = d?.seq || 1;
+      state.sidebarOpen = true;
+    }
+  }
   function load() {
     try {
-      const raw = localStorage.getItem(STORE_KEY);
-      if (!raw) return;
-      const d = JSON.parse(raw);
-      Object.assign(state, {
-        bg: d.bg ?? null,
-        worldW: d.worldW ?? 3000,
-        worldH: d.worldH ?? 2000,
-        grid: { ...state.grid, ...(d.grid || {}) },
-        view: { ...state.view, ...(d.view || {}) },
-        pieces: d.pieces || [],
-        shapes: d.shapes || [],
-        seq: d.seq || 1,
-      });
+      const raw = localStorage.getItem(STORE_KEY) || localStorage.getItem("fieldmap.v1");
+      if (raw) adopt(JSON.parse(raw));
     } catch (e) { /* ignore corrupt store */ }
   }
 
@@ -216,79 +265,60 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
      COORDINATE HELPERS
      --------------------------------------------------------- */
   function screenToWorld(sx, sy) {
-    const r = board.getBoundingClientRect();
-    return {
-      x: (sx - r.left - state.view.tx) / state.view.scale,
-      y: (sy - r.top - state.view.ty) / state.view.scale,
-    };
+    const v = cur().view, r = board.getBoundingClientRect();
+    return { x: (sx - r.left - v.tx) / v.scale, y: (sy - r.top - v.ty) / v.scale };
   }
   function snapPoint(x, y) {
-    if (!state.grid.snap) return { x, y };
-    const g = state.grid;
+    const g = cur().grid;
+    if (!g.snap) return { x, y };
     const col = Math.round((x - g.offX) / g.size - 0.5);
     const row = Math.round((y - g.offY) / g.size - 0.5);
-    return {
-      x: g.offX + (col + 0.5) * g.size,
-      y: g.offY + (row + 0.5) * g.size,
-    };
+    return { x: g.offX + (col + 0.5) * g.size, y: g.offY + (row + 0.5) * g.size };
   }
-  const feetToPx = ft => (ft / FEET_PER_CELL) * state.grid.size;
+  const feetToPx = ft => (ft / FEET_PER_CELL) * cur().grid.size;
+  const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
 
   /* ---------------------------------------------------------
-     RENDER — view transform
+     RENDER
      --------------------------------------------------------- */
   function applyView() {
-    world.style.transform =
-      `translate(${state.view.tx}px, ${state.view.ty}px) scale(${state.view.scale})`;
+    const v = cur().view;
+    world.style.transform = `translate(${v.tx}px, ${v.ty}px) scale(${v.scale})`;
   }
 
-  /* ---------------------------------------------------------
-     RENDER — background
-     --------------------------------------------------------- */
   function renderBg() {
-    if (state.bg) {
-      bgImage.src = state.bg;
-      bgImage.hidden = false;
-      boardHint.hidden = true;
+    const m = cur();
+    if (m.bg) {
+      bgImage.src = m.bg; bgImage.hidden = false; boardHint.hidden = true;
     } else {
-      bgImage.removeAttribute("src");
-      bgImage.hidden = true;
-      boardHint.hidden = state.pieces.length || state.shapes.length;
+      bgImage.removeAttribute("src"); bgImage.hidden = true;
+      boardHint.hidden = !!(m.pieces.length || m.shapes.length);
     }
-    world.style.width = state.worldW + "px";
-    world.style.height = state.worldH + "px";
+    world.style.width = m.worldW + "px";
+    world.style.height = m.worldH + "px";
   }
 
-  /* ---------------------------------------------------------
-     RENDER — grid
-     --------------------------------------------------------- */
   function renderGrid() {
-    const g = state.grid;
-    gridLayer.setAttribute("width", state.worldW);
-    gridLayer.setAttribute("height", state.worldH);
+    const m = cur(), g = m.grid;
+    gridLayer.setAttribute("width", m.worldW);
+    gridLayer.setAttribute("height", m.worldH);
     gridLayer.style.display = g.show ? "block" : "none";
     if (!g.show) return;
-    const patId = "gridpat";
     gridLayer.innerHTML =
       `<defs>
-        <pattern id="${patId}" width="${g.size}" height="${g.size}"
+        <pattern id="gridpat" width="${g.size}" height="${g.size}"
                  patternUnits="userSpaceOnUse"
                  patternTransform="translate(${g.offX},${g.offY})">
           <path d="M ${g.size} 0 L 0 0 0 ${g.size}" fill="none"
                 stroke="${g.color}" stroke-width="1" opacity="0.55"/>
         </pattern>
       </defs>
-      <rect width="${state.worldW}" height="${state.worldH}" fill="url(#${patId})"/>`;
+      <rect width="${m.worldW}" height="${m.worldH}" fill="url(#gridpat)"/>`;
   }
 
-  /* ---------------------------------------------------------
-     RENDER — shapes (AoE overlays)
-     --------------------------------------------------------- */
   function shapeGeometry(s) {
-    // returns an SVG element string for the shape body, in world px
     const c = s.color;
-    const fill = c, stroke = c;
-    const common = `fill="${fill}" fill-opacity="0.28" stroke="${stroke}" stroke-width="2.5" stroke-opacity="0.95"`;
+    const common = `fill="${c}" fill-opacity="0.28" stroke="${c}" stroke-width="2.5" stroke-opacity="0.95"`;
     if (s.type === "sphere") {
       const r = feetToPx(s.size) / 2;
       return `<circle cx="${s.x}" cy="${s.y}" r="${r}" ${common}/>`;
@@ -299,41 +329,35 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
                transform="translate(${s.x},${s.y}) rotate(${s.rot})"/>`;
     }
     if (s.type === "line") {
-      const len = feetToPx(s.size);
-      const w = feetToPx(s.width || 5);
+      const len = feetToPx(s.size), w = feetToPx(s.width || 5);
       return `<rect x="0" y="${-w/2}" width="${len}" height="${w}" ${common}
                transform="translate(${s.x},${s.y}) rotate(${s.rot})"/>`;
     }
-    // cone: 5e style, length == width at the far end (half-angle ~26.57°)
-    const L = feetToPx(s.size);
-    const half = L / 2;
-    const pts = `0,0 ${L},${-half} ${L},${half}`;
-    return `<polygon points="${pts}" ${common}
+    // cone: 5e style, length == width at the far end
+    const L = feetToPx(s.size), half = L / 2;
+    return `<polygon points="0,0 ${L},${-half} ${L},${half}" ${common}
              transform="translate(${s.x},${s.y}) rotate(${s.rot})"/>`;
   }
 
   function renderShapes() {
-    shapeLayer.setAttribute("width", state.worldW);
-    shapeLayer.setAttribute("height", state.worldH);
+    const m = cur();
+    shapeLayer.setAttribute("width", m.worldW);
+    shapeLayer.setAttribute("height", m.worldH);
     let svg = "";
-    for (const s of state.shapes) {
-      const sel = state.selected && state.selected.kind === "shape" && state.selected.id === s.id;
-      svg += `<g data-shape-id="${s.id}" style="pointer-events:auto;cursor:grab;"
-                ${sel ? 'class="shape-selected"' : ""}>${shapeGeometry(s)}</g>`;
+    for (const s of m.shapes) {
+      svg += `<g data-shape-id="${s.id}" style="pointer-events:auto;cursor:grab;">${shapeGeometry(s)}</g>`;
     }
     shapeLayer.innerHTML = svg;
-    // selected outline emphasis
-    if (state.selected && state.selected.kind === "shape") {
-      const g = shapeLayer.querySelector(`[data-shape-id="${state.selected.id}"] > *`);
+    if (m.selected && m.selected.kind === "shape") {
+      const g = shapeLayer.querySelector(`[data-shape-id="${m.selected.id}"] > *`);
       if (g) { g.setAttribute("stroke-width", "4"); g.setAttribute("fill-opacity", "0.38"); }
     }
-    // labels live in token layer space; render as HTML for crispness
     renderShapeLabels();
   }
 
   function renderShapeLabels() {
     tokenLayer.querySelectorAll(".shape-tag").forEach(n => n.remove());
-    for (const s of state.shapes) {
+    for (const s of cur().shapes) {
       if (!s.label) continue;
       const el = document.createElement("div");
       el.className = "shape-tag";
@@ -346,15 +370,15 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     }
   }
 
-  /* ---------------------------------------------------------
-     RENDER — tokens (pieces)
-     --------------------------------------------------------- */
   function renderTokens() {
+    const m = cur();
     tokenLayer.querySelectorAll(".token").forEach(n => n.remove());
-    const size = Math.max(20, state.grid.size);
-    for (const p of state.pieces) {
+    const size = Math.max(20, m.grid.size);
+    for (const p of m.pieces) {
+      if (p.hidden) continue; // hidden pieces live only in the sidebar
+      const down = p.hpMax > 0 && p.hp <= 0;
       const el = document.createElement("div");
-      el.className = "token " + p.tag + (isSelected("piece", p.id) ? " selected" : "");
+      el.className = "token " + p.tag + (isSelected("piece", p.id) ? " selected" : "") + (down ? " downed" : "");
       el.dataset.pieceId = p.id;
       el.style.width = size + "px";
       el.style.height = size + "px";
@@ -373,10 +397,10 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
         lbl.textContent = p.name;
         el.appendChild(lbl);
       }
-      if (p.hp != null && p.hp !== "") {
+      if (p.hpMax > 0) {
         const hp = document.createElement("span");
-        hp.className = "tk-hp";
-        hp.textContent = "HP " + p.hp;
+        hp.className = "tk-hp" + (down ? " down" : "");
+        hp.textContent = down ? "DOWN" : `${p.hp}/${p.hpMax}`;
         el.appendChild(hp);
       }
       tokenLayer.appendChild(el);
@@ -384,16 +408,13 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   }
 
   function isSelected(kind, id) {
-    return state.selected && state.selected.kind === kind && state.selected.id === id;
+    const m = cur();
+    return m.selected && m.selected.kind === kind && m.selected.id === id;
   }
 
   function renderAll() {
-    renderBg();
-    renderGrid();
-    renderShapes();
-    renderTokens();
-    applyView();
-    renderObjects();
+    renderBg(); renderGrid(); renderShapes(); renderTokens();
+    applyView(); renderObjects(); renderSidebar();
   }
 
   /* ---------------------------------------------------------
@@ -405,82 +426,61 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   }
 
   function addPiece(tag, presetId) {
+    const m = cur();
     const preset = findPreset(presetId) || (tag === "enemy" ? CUSTOM_ENEMY : PRESETS.player[0]);
     const c = centerWorld();
     const pos = snapPoint(c.x, c.y);
-    // count existing of this preset to auto-number
-    const sameName = state.pieces.filter(p => p.presetId === presetId).length;
+    const same = m.pieces.filter(p => p.presetId === presetId).length;
+    const hpMax = hpFromStats(preset.stats);
     const piece = {
-      id: nextId(),
-      tag,
-      presetId,
-      name: preset.name + (sameName ? " " + (sameName + 1) : ""),
-      color: preset.color,
-      img: null,
-      hp: extractHP(preset.stats),
+      id: nextId(), tag, presetId,
+      name: preset.name + (same ? " " + (same + 1) : ""),
+      color: preset.color, img: null,
+      hp: hpMax, hpMax, hidden: false,
       x: pos.x, y: pos.y,
     };
-    state.pieces.push(piece);
+    m.pieces.push(piece);
     select("piece", piece.id);
-    renderAll();
-    save();
-  }
-
-  function extractHP(stats) {
-    if (!stats) return "";
-    const m = stats.match(/HP\s+(\d+)/);
-    return m ? m[1] : "";
+    renderAll(); save();
   }
 
   function addShape(type) {
+    const m = cur();
     const c = centerWorld();
     const color = $("#next-shape-color").value;
     const defaults = { cone: 15, sphere: 20, cube: 15, line: 30 };
     const shape = {
-      id: nextId(),
-      type,
-      color,
-      label: "",
-      x: c.x, y: c.y,
-      rot: 0,
-      size: defaults[type] || 15,
-      width: 5,
+      id: nextId(), type, color, label: "",
+      x: c.x, y: c.y, rot: 0, size: defaults[type] || 15, width: 5,
     };
-    state.shapes.push(shape);
+    m.shapes.push(shape);
     select("shape", shape.id);
-    renderAll();
-    save();
+    renderAll(); save();
   }
 
   /* ---------------------------------------------------------
      SELECTION + EDITOR
      --------------------------------------------------------- */
   function select(kind, id) {
-    state.selected = { kind, id };
-    renderShapes();
-    renderTokens();
-    renderObjects();
-    openEditor();
+    cur().selected = { kind, id };
+    renderShapes(); renderTokens(); renderObjects(); renderSidebar(); openEditor();
   }
   function deselect() {
-    state.selected = null;
+    cur().selected = null;
     editor.hidden = true;
-    renderShapes();
-    renderTokens();
-    renderObjects();
+    renderShapes(); renderTokens(); renderObjects(); renderSidebar();
   }
-
   function getSelectedObj() {
-    if (!state.selected) return null;
-    const arr = state.selected.kind === "piece" ? state.pieces : state.shapes;
-    return arr.find(o => o.id === state.selected.id) || null;
+    const m = cur();
+    if (!m.selected) return null;
+    const arr = m.selected.kind === "piece" ? m.pieces : m.shapes;
+    return arr.find(o => o.id === m.selected.id) || null;
   }
-
   function openEditor() {
     const obj = getSelectedObj();
     if (!obj) { editor.hidden = true; return; }
     editor.hidden = false;
-    if (state.selected.kind === "piece") buildPieceEditor(obj);
+    if (cur().selected.kind === "piece") buildPieceEditor(obj);
     else buildShapeEditor(obj);
   }
 
@@ -516,9 +516,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       const grid = document.createElement("div");
       grid.className = "preset-grid";
       const all = [];
-      for (const [group, list] of Object.entries(PRESETS.enemy)) {
-        list.forEach(pr => all.push(pr));
-      }
+      for (const list of Object.values(PRESETS.enemy)) list.forEach(pr => all.push(pr));
       all.push(CUSTOM_ENEMY);
       all.forEach(pr => {
         const chip = document.createElement("button");
@@ -527,7 +525,8 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
         chip.onclick = () => {
           p.presetId = pr.id;
           p.color = pr.color;
-          p.hp = extractHP(pr.stats);
+          const hpMax = hpFromStats(pr.stats);
+          p.hpMax = hpMax; p.hp = hpMax;
           if (pr.id !== "custom") p.name = pr.name;
           renderAll(); save(); openEditor();
         };
@@ -539,31 +538,43 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
 
     // Name
     const nameF = field("Label");
-    const name = inputText(p.name, v => { p.name = v; renderTokens(); save(); });
-    nameF.appendChild(name);
+    nameF.appendChild(inputText(p.name, v => { p.name = v; renderTokens(); renderSidebar(); save(); }));
     edBody.appendChild(nameF);
 
-    // Color + HP row
+    // Color + Visibility
     const row = document.createElement("div");
     row.className = "field-row";
     const colorF = field("Color");
-    const colorRow = document.createElement("div");
-    colorRow.className = "ed-color-row";
+    const cr = document.createElement("div");
+    cr.className = "ed-color-row";
     const sw = document.createElement("input");
     sw.type = "color"; sw.className = "color-swatch"; sw.value = toHex(p.color);
-    sw.oninput = () => { p.color = sw.value; renderTokens(); save(); };
-    colorRow.appendChild(sw);
-    colorF.appendChild(colorRow);
+    sw.oninput = () => { p.color = sw.value; renderTokens(); renderSidebar(); save(); };
+    cr.appendChild(sw);
+    colorF.appendChild(cr);
     row.appendChild(colorF);
 
-    const hpF = field("HP (optional)");
-    const hp = document.createElement("input");
-    hp.type = "text"; hp.value = p.hp ?? "";
-    hp.oninput = () => { p.hp = hp.value; renderTokens(); save(); };
-    styleInput(hp);
-    hpF.appendChild(hp);
-    row.appendChild(hpF);
+    const visF = field("Visibility");
+    const visBtn = document.createElement("button");
+    visBtn.className = "toggle-btn" + (p.hidden ? "" : " active");
+    visBtn.textContent = p.hidden ? "Hidden" : "Shown";
+    visBtn.onclick = () => { p.hidden = !p.hidden; renderTokens(); renderSidebar(); save(); openEditor(); };
+    visF.appendChild(visBtn);
+    row.appendChild(visF);
     edBody.appendChild(row);
+
+    // HP current / max
+    const hpRow = document.createElement("div");
+    hpRow.className = "field-row";
+    const hpF = field("HP (current)");
+    const hpI = numInput(p.hp, v => { p.hp = v; renderTokens(); renderSidebar(); save(); });
+    hpF.appendChild(hpI);
+    hpRow.appendChild(hpF);
+    const maxF = field("HP (max)");
+    const maxI = numInput(p.hpMax, v => { p.hpMax = v; if (p.hp > v) p.hp = v; renderTokens(); renderSidebar(); save(); });
+    maxF.appendChild(maxI);
+    hpRow.appendChild(maxF);
+    edBody.appendChild(hpRow);
 
     // Image
     const imgF = field("Token Image");
@@ -598,7 +609,6 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     edTitle.textContent = (titles[s.type] || "Overlay") + " Overlay";
     edBody.innerHTML = "";
 
-    // Label + color
     const lblF = field("Label (e.g. Molotov, Spores)");
     lblF.appendChild(inputText(s.label, v => { s.label = v; renderShapeLabels(); save(); }));
     edBody.appendChild(lblF);
@@ -617,20 +627,12 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     colorF.appendChild(cr);
     edBody.appendChild(colorF);
 
-    // Size (ft)
-    const sizeLabel = s.type === "sphere" ? "Diameter (ft)"
-      : s.type === "cube" ? "Side (ft)"
-      : s.type === "line" ? "Length (ft)" : "Length (ft)";
+    const sizeLabel = s.type === "sphere" ? "Diameter (ft)" : s.type === "cube" ? "Side (ft)" : "Length (ft)";
     edBody.appendChild(rangeField(sizeLabel, s.size, 5, 120, 5, v => { s.size = v; renderShapes(); save(); }));
-
-    if (s.type === "line") {
+    if (s.type === "line")
       edBody.appendChild(rangeField("Width (ft)", s.width, 5, 30, 5, v => { s.width = v; renderShapes(); save(); }));
-    }
-
-    // Rotation (not for sphere)
-    if (s.type !== "sphere") {
+    if (s.type !== "sphere")
       edBody.appendChild(rangeField("Rotation (°)", s.rot, 0, 350, 5, v => { s.rot = v; renderShapes(); save(); }));
-    }
   }
 
   /* ---- small editor builders ---- */
@@ -643,11 +645,16 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     f.appendChild(s);
     return f;
   }
-  function styleInput(el) { /* class-based; relies on .field input */ }
   function inputText(val, onInput) {
     const i = document.createElement("input");
     i.type = "text"; i.value = val || "";
     i.oninput = () => onInput(i.value);
+    return i;
+  }
+  function numInput(val, onInput) {
+    const i = document.createElement("input");
+    i.type = "number"; i.value = val ?? 0;
+    i.oninput = () => onInput(parseInt(i.value, 10) || 0);
     return i;
   }
   function rangeField(label, val, min, max, step, onInput) {
@@ -665,10 +672,135 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   }
   function toHex(c) {
     if (!c) return "#a7bd6e";
-    if (c[0] === "#") return c.length === 4
-      ? "#" + c.slice(1).split("").map(x => x + x).join("")
-      : c.slice(0, 7);
+    if (c[0] === "#") return c.length === 4 ? "#" + c.slice(1).split("").map(x => x + x).join("") : c.slice(0, 7);
     return "#a7bd6e";
+  }
+
+  /* ---------------------------------------------------------
+     ENEMY SIDEBAR
+     --------------------------------------------------------- */
+  function applySidebar() {
+    sidebar.classList.toggle("collapsed", !state.sidebarOpen);
+    sidebarReopen.hidden = state.sidebarOpen;
+  }
+  function setSidebar(open) {
+    state.sidebarOpen = open;
+    applySidebar(); save();
+  }
+  function amount() {
+    return Math.max(1, parseInt($("#es-amount").value, 10) || 1);
+  }
+  function renderSidebar() {
+    const m = cur();
+    const enemies = m.pieces.filter(p => p.tag === "enemy");
+    enemyList.innerHTML = "";
+    if (!enemies.length) {
+      enemyList.innerHTML = `<div class="op-empty">No enemies on this map yet. Use “+ Enemy”.</div>`;
+      return;
+    }
+    enemies.forEach(p => {
+      const down = p.hpMax > 0 && p.hp <= 0;
+      const pct = p.hpMax > 0 ? clamp(p.hp / p.hpMax, 0, 1) * 100 : 0;
+      const row = document.createElement("div");
+      row.className = "enemy-row" + (p.hidden ? " hidden-row" : "") + (down ? " down-row" : "") + (isSelected("piece", p.id) ? " sel" : "");
+
+      const head = document.createElement("div");
+      head.className = "er-head";
+      head.innerHTML =
+        `<span class="er-dot" style="background:${p.color}"></span>
+         <span class="er-name">${escapeHtml(p.name || "Enemy")}</span>
+         <span class="er-hp">${p.hpMax > 0 ? `${Math.max(0, p.hp)}/${p.hpMax}` : "—"}</span>`;
+      head.onclick = () => focusObj("piece", p.id);
+      row.appendChild(head);
+
+      if (p.hpMax > 0) {
+        const bar = document.createElement("div");
+        bar.className = "er-bar";
+        bar.innerHTML = `<div class="er-fill" style="width:${pct}%;background:${down ? "var(--red)" : p.color}"></div>`;
+        row.appendChild(bar);
+      }
+
+      const ctr = document.createElement("div");
+      ctr.className = "er-controls";
+      ctr.appendChild(rowBtn("dmg", "−" + amount(), () => { p.hp = clamp(p.hp - amount(), 0, p.hpMax || 9999); renderTokens(); renderSidebar(); save(); }));
+      ctr.appendChild(rowBtn("heal", "+" + amount(), () => { p.hp = clamp(p.hp + amount(), 0, p.hpMax || 9999); renderTokens(); renderSidebar(); save(); }));
+      ctr.appendChild(rowBtn("eye" + (p.hidden ? " off" : ""), p.hidden ? "Show" : "Hide", () => { p.hidden = !p.hidden; renderTokens(); renderSidebar(); save(); if (getSelectedObj() === p) openEditor(); }));
+      row.appendChild(ctr);
+
+      enemyList.appendChild(row);
+    });
+  }
+  function rowBtn(cls, label, onClick) {
+    const b = document.createElement("button");
+    b.className = "er-btn " + cls;
+    b.textContent = label;
+    b.onclick = (e) => { e.stopPropagation(); onClick(); };
+    return b;
+  }
+
+  /* ---------------------------------------------------------
+     TABS
+     --------------------------------------------------------- */
+  function renderTabs() {
+    tabStrip.innerHTML = "";
+    state.maps.forEach(m => {
+      const tab = document.createElement("div");
+      tab.className = "tab" + (m.id === state.activeMapId ? " active" : "");
+      const name = document.createElement("span");
+      name.className = "tab-name";
+      name.textContent = m.name;
+      name.title = "Click to open · double-click to rename";
+      name.onclick = () => switchMap(m.id);
+      name.ondblclick = () => renameMap(m.id);
+      tab.appendChild(name);
+      const x = document.createElement("button");
+      x.className = "tab-x";
+      x.textContent = "✕";
+      x.title = "Close tab";
+      x.onclick = (e) => { e.stopPropagation(); closeMap(m.id); };
+      tab.appendChild(x);
+      tabStrip.appendChild(tab);
+    });
+    const add = document.createElement("button");
+    add.className = "tab-add";
+    add.textContent = "+ Map";
+    add.title = "New blank map (e.g. the next floor)";
+    add.onclick = addMap;
+    tabStrip.appendChild(add);
+  }
+  function switchMap(id) {
+    if (id === state.activeMapId) return;
+    state.activeMapId = id;
+    editor.hidden = true;
+    syncGridInputs();
+    renderTabs(); renderAll();
+    save();
+  }
+  function addMap() {
+    const m = newMap();
+    state.maps.push(m);
+    state.activeMapId = m.id;
+    editor.hidden = true;
+    syncGridInputs();
+    renderTabs(); renderAll(); fitView();
+    save();
+  }
+  function renameMap(id) {
+    const m = state.maps.find(x => x.id === id);
+    if (!m) return;
+    const name = prompt("Rename map:", m.name);
+    if (name != null && name.trim()) { m.name = name.trim(); renderTabs(); save(); }
+  }
+  function closeMap(id) {
+    if (state.maps.length === 1) { toast("Keep at least one map.", true); return; }
+    const m = state.maps.find(x => x.id === id);
+    if (!confirm(`Close “${m.name}”? Its pieces and overlays are removed.`)) return;
+    const idx = state.maps.findIndex(x => x.id === id);
+    state.maps.splice(idx, 1);
+    if (state.activeMapId === id) state.activeMapId = state.maps[Math.max(0, idx - 1)].id;
+    editor.hidden = true;
+    syncGridInputs();
+    renderTabs(); renderAll(); save();
   }
 
   /* ---------------------------------------------------------
@@ -676,14 +808,13 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
      --------------------------------------------------------- */
   function renderObjects() {
     if (objectsPanel.hidden) return;
-    const pl = $("#op-pieces");
-    const sl = $("#op-shapes");
-    pl.innerHTML = "";
-    sl.innerHTML = "";
-    if (!state.pieces.length) pl.innerHTML = `<div class="op-empty">No pieces yet.</div>`;
-    if (!state.shapes.length) sl.innerHTML = `<div class="op-empty">No overlays yet.</div>`;
-    state.pieces.forEach(p => pl.appendChild(objRow(p.color, p.name || "Unnamed", p.tag, () => focusObj("piece", p.id))));
-    state.shapes.forEach(s => sl.appendChild(objRow(s.color, s.label || cap(s.type), s.type, () => focusObj("shape", s.id))));
+    const m = cur();
+    const pl = $("#op-pieces"), sl = $("#op-shapes");
+    pl.innerHTML = ""; sl.innerHTML = "";
+    if (!m.pieces.length) pl.innerHTML = `<div class="op-empty">No pieces yet.</div>`;
+    if (!m.shapes.length) sl.innerHTML = `<div class="op-empty">No overlays yet.</div>`;
+    m.pieces.forEach(p => pl.appendChild(objRow(p.color, p.name || "Unnamed", p.tag + (p.hidden ? " · hidden" : ""), () => focusObj("piece", p.id))));
+    m.shapes.forEach(s => sl.appendChild(objRow(s.color, s.label || cap(s.type), s.type, () => focusObj("shape", s.id))));
   }
   function objRow(color, name, kind, onClick) {
     const row = document.createElement("div");
@@ -695,12 +826,12 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     return row;
   }
   function focusObj(kind, id) {
-    const obj = (kind === "piece" ? state.pieces : state.shapes).find(o => o.id === id);
+    const m = cur();
+    const obj = (kind === "piece" ? m.pieces : m.shapes).find(o => o.id === id);
     if (!obj) return;
-    // center the view on it
     const r = board.getBoundingClientRect();
-    state.view.tx = r.width / 2 - obj.x * state.view.scale;
-    state.view.ty = r.height / 2 - obj.y * state.view.scale;
+    m.view.tx = r.width / 2 - obj.x * m.view.scale;
+    m.view.ty = r.height / 2 - obj.y * m.view.scale;
     applyView();
     select(kind, id);
   }
@@ -712,9 +843,8 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   /* ---------------------------------------------------------
      POINTER — pan / zoom / drag
      --------------------------------------------------------- */
-  const pointers = new Map(); // id -> {x,y}
-  let drag = null;            // active drag descriptor
-  let pinch = null;
+  const pointers = new Map();
+  let drag = null, pinch = null;
 
   board.addEventListener("pointerdown", onPointerDown);
   window.addEventListener("pointermove", onPointerMove);
@@ -723,38 +853,28 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
 
   function onPointerDown(e) {
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-
-    // two-finger pinch
     if (pointers.size === 2) {
       drag = null;
       const pts = [...pointers.values()];
-      pinch = {
-        dist: dist(pts[0], pts[1]),
-        scale: state.view.scale,
-        cx: (pts[0].x + pts[1].x) / 2,
-        cy: (pts[0].y + pts[1].y) / 2,
-      };
+      pinch = { dist: dist(pts[0], pts[1]), scale: cur().view.scale, cx: (pts[0].x + pts[1].x) / 2, cy: (pts[0].y + pts[1].y) / 2 };
       return;
     }
-
     const tokenEl = e.target.closest(".token");
     const shapeEl = e.target.closest("[data-shape-id]");
-
     if (tokenEl) {
       const id = tokenEl.dataset.pieceId;
-      const p = state.pieces.find(o => o.id === id);
+      const p = cur().pieces.find(o => o.id === id);
       const w = screenToWorld(e.clientX, e.clientY);
       drag = { kind: "piece", id, dx: w.x - p.x, dy: w.y - p.y, moved: false, startX: e.clientX, startY: e.clientY };
       tokenEl.classList.add("dragging");
       tokenEl.setPointerCapture?.(e.pointerId);
     } else if (shapeEl) {
       const id = shapeEl.dataset.shapeId;
-      const s = state.shapes.find(o => o.id === id);
+      const s = cur().shapes.find(o => o.id === id);
       const w = screenToWorld(e.clientX, e.clientY);
       drag = { kind: "shape", id, dx: w.x - s.x, dy: w.y - s.y, moved: false, startX: e.clientX, startY: e.clientY };
     } else {
-      // pan
-      drag = { kind: "pan", startTx: state.view.tx, startTy: state.view.ty, startX: e.clientX, startY: e.clientY, moved: false };
+      drag = { kind: "pan", startTx: cur().view.tx, startTy: cur().view.ty, startX: e.clientX, startY: e.clientY, moved: false };
       board.classList.add("panning");
       closeEnemyMenu();
     }
@@ -762,44 +882,32 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
 
   function onPointerMove(e) {
     if (pointers.has(e.pointerId)) pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-
     if (pinch && pointers.size >= 2) {
       const pts = [...pointers.values()];
-      const d = dist(pts[0], pts[1]);
-      const ratio = d / pinch.dist;
-      zoomAround(pinch.cx, pinch.cy, clampScale(pinch.scale * ratio));
+      zoomAround(pinch.cx, pinch.cy, clampScale(pinch.scale * (dist(pts[0], pts[1]) / pinch.dist)));
       return;
     }
     if (!drag) return;
-
     if (drag.kind === "pan") {
-      state.view.tx = drag.startTx + (e.clientX - drag.startX);
-      state.view.ty = drag.startTy + (e.clientY - drag.startY);
+      const v = cur().view;
+      v.tx = drag.startTx + (e.clientX - drag.startX);
+      v.ty = drag.startTy + (e.clientY - drag.startY);
       if (Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) > 3) drag.moved = true;
       applyView();
       return;
     }
-
     const w = screenToWorld(e.clientX, e.clientY);
     if (Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) > 3) drag.moved = true;
-
     if (drag.kind === "piece") {
-      const p = state.pieces.find(o => o.id === drag.id);
+      const p = cur().pieces.find(o => o.id === drag.id);
       if (!p) return;
-      p.x = w.x - drag.dx;
-      p.y = w.y - drag.dy;
-      // live move without full rebuild
+      p.x = w.x - drag.dx; p.y = w.y - drag.dy;
       const el = tokenLayer.querySelector(`[data-piece-id="${drag.id}"]`);
-      if (el) {
-        const size = parseFloat(el.style.width);
-        el.style.left = (p.x - size / 2) + "px";
-        el.style.top = (p.y - size / 2) + "px";
-      }
+      if (el) { const size = parseFloat(el.style.width); el.style.left = (p.x - size / 2) + "px"; el.style.top = (p.y - size / 2) + "px"; }
     } else if (drag.kind === "shape") {
-      const s = state.shapes.find(o => o.id === drag.id);
+      const s = cur().shapes.find(o => o.id === drag.id);
       if (!s) return;
-      s.x = w.x - drag.dx;
-      s.y = w.y - drag.dy;
+      s.x = w.x - drag.dx; s.y = w.y - drag.dy;
       renderShapes();
     }
   }
@@ -809,34 +917,18 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     if (pointers.size < 2) pinch = null;
     board.classList.remove("panning");
     tokenLayer.querySelectorAll(".dragging").forEach(n => n.classList.remove("dragging"));
-
     if (!drag) return;
     const d = drag; drag = null;
-
-    if (d.kind === "pan") {
-      if (!d.moved) deselect();   // tap empty space clears selection
-      else save();
-      return;
-    }
-
+    if (d.kind === "pan") { if (!d.moved) deselect(); else save(); return; }
     if (d.kind === "piece") {
-      const p = state.pieces.find(o => o.id === d.id);
+      const p = cur().pieces.find(o => o.id === d.id);
       if (p) {
-        if (!d.moved) {
-          select("piece", p.id);
-        } else {
-          const sp = snapPoint(p.x, p.y);
-          p.x = sp.x; p.y = sp.y;
-          renderTokens();
-          save();
-        }
+        if (!d.moved) select("piece", p.id);
+        else { const sp = snapPoint(p.x, p.y); p.x = sp.x; p.y = sp.y; renderTokens(); save(); }
       }
     } else if (d.kind === "shape") {
-      const s = state.shapes.find(o => o.id === d.id);
-      if (s) {
-        if (!d.moved) select("shape", s.id);
-        else { renderShapes(); save(); }
-      }
+      const s = cur().shapes.find(o => o.id === d.id);
+      if (s) { if (!d.moved) select("shape", s.id); else { renderShapes(); save(); } }
     }
   }
 
@@ -844,20 +936,17 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   const clampScale = s => Math.min(4, Math.max(0.15, s));
 
   function zoomAround(cx, cy, newScale) {
-    const r = board.getBoundingClientRect();
-    const wx = (cx - r.left - state.view.tx) / state.view.scale;
-    const wy = (cy - r.top - state.view.ty) / state.view.scale;
-    state.view.scale = newScale;
-    state.view.tx = cx - r.left - wx * newScale;
-    state.view.ty = cy - r.top - wy * newScale;
-    applyView();
-    save();
+    const v = cur().view, r = board.getBoundingClientRect();
+    const wx = (cx - r.left - v.tx) / v.scale;
+    const wy = (cy - r.top - v.ty) / v.scale;
+    v.scale = newScale;
+    v.tx = cx - r.left - wx * newScale;
+    v.ty = cy - r.top - wy * newScale;
+    applyView(); save();
   }
-
   board.addEventListener("wheel", e => {
     e.preventDefault();
-    const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
-    zoomAround(e.clientX, e.clientY, clampScale(state.view.scale * factor));
+    zoomAround(e.clientX, e.clientY, clampScale(cur().view.scale * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
   }, { passive: false });
 
   /* ---------------------------------------------------------
@@ -873,30 +962,23 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     const f = bgFileInput.files[0];
     if (!f) return;
     readImage(f, (dataUrl, w, h) => {
-      state.bg = dataUrl;
-      state.worldW = w; state.worldH = h;
-      // center the new map
+      const m = cur();
+      m.bg = dataUrl; m.worldW = w; m.worldH = h;
       const r = board.getBoundingClientRect();
-      const s = Math.min(r.width / w, r.height / h, 1) * 0.92;
-      state.view.scale = clampScale(s);
-      state.view.tx = (r.width - w * state.view.scale) / 2;
-      state.view.ty = (r.height - h * state.view.scale) / 2;
-      renderAll();
-      save();
+      const s = clampScale(Math.min(r.width / w, r.height / h, 1) * 0.92);
+      m.view.scale = s; m.view.tx = (r.width - w * s) / 2; m.view.ty = (r.height - h * s) / 2;
+      renderAll(); save();
       toast("Map loaded. Set grid Size to match the squares.");
     });
     bgFileInput.value = "";
   };
-  $("#clear-bg-btn").onclick = () => {
-    state.bg = null;
-    renderAll(); save();
-  };
+  $("#clear-bg-btn").onclick = () => { cur().bg = null; renderAll(); save(); };
 
   pieceFileInput.onchange = () => {
     const f = pieceFileInput.files[0];
     if (!f || !pieceFileTarget) return;
     readImage(f, (dataUrl) => {
-      const p = state.pieces.find(o => o.id === pieceFileTarget);
+      const p = cur().pieces.find(o => o.id === pieceFileTarget);
       if (p) { p.img = dataUrl; renderTokens(); save(); openEditor(); }
       pieceFileTarget = null;
     });
@@ -934,10 +1016,9 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     for (const [group, list] of Object.entries(PRESETS.enemy)) {
       html += `<div class="dd-group-label">${group}</div>`;
       list.forEach(p => {
-        const hp = extractHP(p.stats);
         html += `<button class="dd-item" data-preset="${p.id}">
                    <span class="dd-dot" style="background:${p.color}"></span>${p.name}
-                   <span class="dd-meta">${hp ? "HP " + hp : ""}</span></button>`;
+                   <span class="dd-meta">HP ${hpFromStats(p.stats)}</span></button>`;
       });
     }
     html += `<div class="dd-group-label">Custom</div>
@@ -953,26 +1034,22 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     if (!e.target.closest("#enemy-menu") && !e.target.closest("#add-enemy-btn")) closeEnemyMenu();
   });
 
-  document.querySelectorAll(".shape-btn").forEach(b => {
-    b.onclick = () => addShape(b.dataset.shape);
-  });
+  document.querySelectorAll(".shape-btn").forEach(b => { b.onclick = () => addShape(b.dataset.shape); });
 
   // Grid controls
   const gridSize = $("#grid-size"), gridOffX = $("#grid-offx"), gridOffY = $("#grid-offy"), gridColor = $("#grid-color");
   function syncGridInputs() {
-    gridSize.value = state.grid.size;
-    gridOffX.value = state.grid.offX;
-    gridOffY.value = state.grid.offY;
-    gridColor.value = toHex(state.grid.color);
-    $("#grid-toggle").classList.toggle("active", state.grid.show);
-    $("#snap-toggle").classList.toggle("active", state.grid.snap);
+    const g = cur().grid;
+    gridSize.value = g.size; gridOffX.value = g.offX; gridOffY.value = g.offY; gridColor.value = toHex(g.color);
+    $("#grid-toggle").classList.toggle("active", g.show);
+    $("#snap-toggle").classList.toggle("active", g.snap);
   }
-  gridSize.oninput = () => { state.grid.size = clampNum(gridSize.value, 8, 400, 60); renderGrid(); renderTokens(); save(); };
-  gridOffX.oninput = () => { state.grid.offX = clampNum(gridOffX.value, -1000, 1000, 0); renderGrid(); save(); };
-  gridOffY.oninput = () => { state.grid.offY = clampNum(gridOffY.value, -1000, 1000, 0); renderGrid(); save(); };
-  gridColor.oninput = () => { state.grid.color = gridColor.value; renderGrid(); save(); };
-  $("#grid-toggle").onclick = () => { state.grid.show = !state.grid.show; syncGridInputs(); renderGrid(); save(); };
-  $("#snap-toggle").onclick = () => { state.grid.snap = !state.grid.snap; syncGridInputs(); save(); };
+  gridSize.oninput = () => { cur().grid.size = clampNum(gridSize.value, 8, 400, 60); renderGrid(); renderTokens(); save(); };
+  gridOffX.oninput = () => { cur().grid.offX = clampNum(gridOffX.value, -1000, 1000, 0); renderGrid(); save(); };
+  gridOffY.oninput = () => { cur().grid.offY = clampNum(gridOffY.value, -1000, 1000, 0); renderGrid(); save(); };
+  gridColor.oninput = () => { cur().grid.color = gridColor.value; renderGrid(); save(); };
+  $("#grid-toggle").onclick = () => { cur().grid.show = !cur().grid.show; syncGridInputs(); renderGrid(); save(); };
+  $("#snap-toggle").onclick = () => { cur().grid.snap = !cur().grid.snap; syncGridInputs(); save(); };
   const clampNum = (v, lo, hi, dflt) => { const n = parseFloat(v); return isNaN(n) ? dflt : Math.min(hi, Math.max(lo, n)); };
 
   // Zoom
@@ -981,35 +1058,36 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   $("#zoom-fit").onclick = fitView;
   function zoomCenter(f) {
     const r = board.getBoundingClientRect();
-    zoomAround(r.left + r.width / 2, r.top + r.height / 2, clampScale(state.view.scale * f));
+    zoomAround(r.left + r.width / 2, r.top + r.height / 2, clampScale(cur().view.scale * f));
   }
   function fitView() {
-    const r = board.getBoundingClientRect();
-    const w = state.worldW, h = state.worldH;
-    const s = clampScale(Math.min(r.width / w, r.height / h) * 0.94);
-    state.view.scale = s;
-    state.view.tx = (r.width - w * s) / 2;
-    state.view.ty = (r.height - h * s) / 2;
+    const m = cur(), r = board.getBoundingClientRect();
+    const s = clampScale(Math.min(r.width / m.worldW, r.height / m.worldH) * 0.94);
+    m.view.scale = s; m.view.tx = (r.width - m.worldW * s) / 2; m.view.ty = (r.height - m.worldH * s) / 2;
     applyView(); save();
   }
 
   // Objects panel
-  $("#toggle-objects").onclick = () => {
-    objectsPanel.hidden = !objectsPanel.hidden;
-    renderObjects();
-  };
+  $("#toggle-objects").onclick = () => { objectsPanel.hidden = !objectsPanel.hidden; renderObjects(); };
   $("#objects-close").onclick = () => { objectsPanel.hidden = true; };
 
   // Editor
   $("#ed-close").onclick = deselect;
   $("#ed-delete").onclick = () => {
-    if (!state.selected) return;
-    const { kind, id } = state.selected;
-    if (kind === "piece") state.pieces = state.pieces.filter(p => p.id !== id);
-    else state.shapes = state.shapes.filter(s => s.id !== id);
-    deselect();
-    renderAll(); save();
+    const m = cur();
+    if (!m.selected) return;
+    const { kind, id } = m.selected;
+    if (kind === "piece") m.pieces = m.pieces.filter(p => p.id !== id);
+    else m.shapes = m.shapes.filter(s => s.id !== id);
+    deselect(); renderAll(); save();
   };
+
+  // Sidebar
+  $("#es-collapse").onclick = () => setSidebar(false);
+  sidebarReopen.onclick = () => setSidebar(true);
+  $("#amt-dec").onclick = () => { const i = $("#es-amount"); i.value = Math.max(1, (parseInt(i.value, 10) || 1) - 1); renderSidebar(); };
+  $("#amt-inc").onclick = () => { const i = $("#es-amount"); i.value = (parseInt(i.value, 10) || 1) + 1; renderSidebar(); };
+  $("#es-amount").oninput = renderSidebar;
 
   // Data
   $("#export-btn").onclick = exportData;
@@ -1020,15 +1098,8 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        const d = JSON.parse(reader.result);
-        Object.assign(state, {
-          bg: d.bg ?? null, worldW: d.worldW ?? 3000, worldH: d.worldH ?? 2000,
-          grid: { ...state.grid, ...(d.grid || {}) },
-          view: { ...state.view, ...(d.view || {}) },
-          pieces: d.pieces || [], shapes: d.shapes || [], seq: d.seq || 1,
-        });
-        state.selected = null;
-        syncGridInputs(); renderAll(); save();
+        adopt(JSON.parse(reader.result));
+        applySidebar(); syncGridInputs(); renderTabs(); renderAll(); save();
         toast("Map imported.");
       } catch (err) { toast("Import failed — invalid file.", true); }
     };
@@ -1036,12 +1107,9 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     importFileInput.value = "";
   };
   function exportData() {
-    const out = {
-      bg: state.bg, worldW: state.worldW, worldH: state.worldH,
-      grid: state.grid, view: state.view,
-      pieces: state.pieces, shapes: state.shapes, seq: state.seq,
-    };
-    const blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify({
+      maps: state.maps, activeMapId: state.activeMapId, seq: state.seq, sidebarOpen: state.sidebarOpen,
+    }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url; a.download = "field-map.json"; a.click();
@@ -1049,22 +1117,19 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   }
 
   $("#reset-btn").onclick = () => {
-    if (!confirm("Clear the whole board? This removes the map, pieces and overlays.")) return;
-    state.bg = null; state.pieces = []; state.shapes = []; state.selected = null;
-    state.worldW = 3000; state.worldH = 2000;
-    state.view = { tx: 60, ty: 60, scale: 1 };
-    deselect(); renderAll(); save();
+    if (!confirm("Clear everything? All tabs, maps, pieces and overlays are removed.")) return;
+    const m = newMap("Map 1");
+    state.maps = [m]; state.activeMapId = m.id;
+    editor.hidden = true;
+    syncGridInputs(); renderTabs(); renderAll(); fitView(); save();
     toast("Board cleared.");
   };
 
-  // Keyboard: Delete removes selection, Esc deselects
+  // Keyboard
   window.addEventListener("keydown", e => {
     if (e.target.matches("input, textarea, select")) return;
-    if ((e.key === "Delete" || e.key === "Backspace") && state.selected) {
-      e.preventDefault(); $("#ed-delete").click();
-    } else if (e.key === "Escape") {
-      deselect(); closeEnemyMenu();
-    }
+    if ((e.key === "Delete" || e.key === "Backspace") && cur().selected) { e.preventDefault(); $("#ed-delete").click(); }
+    else if (e.key === "Escape") { deselect(); closeEnemyMenu(); }
   });
 
   /* ---------------------------------------------------------
@@ -1083,10 +1148,12 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
      INIT
      --------------------------------------------------------- */
   load();
+  if (!state.maps.length) { const m = newMap("Map 1"); state.maps.push(m); state.activeMapId = m.id; }
+  if (!cur()) state.activeMapId = state.maps[0].id;
+  applySidebar();
+  renderTabs();
   syncGridInputs();
   renderAll();
-  if (!state.bg && !state.pieces.length && !state.shapes.length) {
-    // fresh start — center default world
-    fitView();
-  }
+  const m0 = cur();
+  if (!m0.bg && !m0.pieces.length && !m0.shapes.length) fitView();
 })();
