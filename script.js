@@ -223,7 +223,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
           toolbarOpen: state.toolbarOpen, visionShow: state.visionShow, lighting: state.lighting,
         }));
       } catch (e) {
-        toast("Couldn't save — map image may be too large for storage.", true);
+        toast("Couldn't save settings to local storage.", true);
       }
     }, 250);
   }
@@ -288,6 +288,140 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   }
 
   /* ---------------------------------------------------------
+     IMAGE STORE — big images live in IndexedDB (Blobs), not in
+     localStorage. Saved state keeps only small string refs, so
+     the ~5MB localStorage quota that broke saving with large
+     maps no longer applies. Images are also downscaled and
+     recompressed on upload to keep them lean.
+     --------------------------------------------------------- */
+  const IDB = (() => {
+    let dbp = null;
+    function open() {
+      if (dbp) return dbp;
+      dbp = new Promise((res, rej) => {
+        let r;
+        try { r = indexedDB.open("fieldmap-images", 1); }
+        catch (e) { rej(e); return; }
+        r.onupgradeneeded = () => { if (!r.result.objectStoreNames.contains("img")) r.result.createObjectStore("img"); };
+        r.onsuccess = () => res(r.result);
+        r.onerror = () => rej(r.error);
+      });
+      return dbp;
+    }
+    const run = (mode, fn) => open().then(db => new Promise((res, rej) => {
+      const t = db.transaction("img", mode);
+      const rq = fn(t.objectStore("img"));
+      t.oncomplete = () => res(rq && rq.result);
+      t.onerror = () => rej(t.error);
+      t.onabort = () => rej(t.error);
+    }));
+    return {
+      put: (id, blob) => run("readwrite", s => s.put(blob, id)),
+      get: (id) => run("readonly", s => s.get(id)),
+      del: (id) => run("readwrite", s => s.delete(id)),
+      keys: () => run("readonly", s => s.getAllKeys()),
+    };
+  })();
+
+  const urlCache = new Map(); // imageId -> objectURL
+  const newImgId = () => "img_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  const isInline = ref => typeof ref === "string" && ref.startsWith("data:");
+
+  function imgURL(ref) {
+    if (!ref) return "";
+    if (isInline(ref)) return ref;       // legacy inline / freshly imported
+    return urlCache.get(ref) || "";
+  }
+  async function ensureImage(ref) {
+    if (!ref || isInline(ref)) return ref || null;
+    if (urlCache.has(ref)) return urlCache.get(ref);
+    let blob = null;
+    try { blob = await IDB.get(ref); } catch (e) { return null; }
+    if (!blob) return null;
+    const url = URL.createObjectURL(blob);
+    urlCache.set(ref, url);
+    return url;
+  }
+  let preloading = false;
+  async function preloadImages(m) {
+    const refs = [m.bg, ...m.pieces.map(p => p.img)].filter(r => r && !isInline(r) && !urlCache.has(r));
+    if (!refs.length || preloading) return;
+    preloading = true;
+    for (const r of refs) await ensureImage(r);
+    preloading = false;
+    renderBg(); renderTokens();
+  }
+  function blobToDataURL(blob) {
+    return new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => res(null); fr.readAsDataURL(blob); });
+  }
+  function dataURLToBlob(d) {
+    const [head, b64] = d.split(",");
+    const mime = (head.match(/data:([^;]+)/) || [])[1] || "image/png";
+    const bin = atob(b64), len = bin.length, arr = new Uint8Array(len);
+    for (let i = 0; i < len; i++) arr[i] = bin.charCodeAt(i);
+    return new Blob([arr], { type: mime });
+  }
+  // downscale + recompress an uploaded file, store Blob in IDB, return {id,w,h}
+  function processImageFile(file, maxDim, cb) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = async () => {
+        const w0 = img.naturalWidth || 1200, h0 = img.naturalHeight || 800;
+        const scale = Math.min(1, maxDim / Math.max(w0, h0));
+        const w = Math.max(1, Math.round(w0 * scale)), h = Math.max(1, Math.round(h0 * scale));
+        let blob = null;
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = w; canvas.height = h;
+          canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+          blob = await new Promise(r => canvas.toBlob(r, "image/webp", 0.85))
+              || await new Promise(r => canvas.toBlob(r, "image/jpeg", 0.85));
+        } catch (e) { blob = null; }
+        if (!blob) { try { blob = await (await fetch(reader.result)).blob(); } catch (e2) {} }
+        if (!blob) { cb(null, w0, h0); return; }
+        const id = newImgId();
+        try { await IDB.put(id, blob); urlCache.set(id, URL.createObjectURL(blob)); cb(id, w, h); }
+        catch (e) { cb(null, w0, h0); }
+      };
+      img.onerror = () => cb(null, 1200, 800);
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  }
+  // move inline dataURL images (legacy saves / imports) into IDB as refs
+  async function migrateInlineImages() {
+    let changed = false;
+    for (const m of state.maps) {
+      if (isInline(m.bg)) {
+        const id = newImgId(), blob = dataURLToBlob(m.bg);
+        try { await IDB.put(id, blob); urlCache.set(id, URL.createObjectURL(blob)); m.bg = id; changed = true; } catch (e) {}
+      }
+      for (const p of m.pieces) {
+        if (isInline(p.img)) {
+          const id = newImgId(), blob = dataURLToBlob(p.img);
+          try { await IDB.put(id, blob); urlCache.set(id, URL.createObjectURL(blob)); p.img = id; changed = true; } catch (e) {}
+        }
+      }
+    }
+    if (changed) { save(); renderBg(); renderTokens(); }
+  }
+  // remove IDB blobs no longer referenced by any map
+  async function gcImages() {
+    let keys;
+    try { keys = await IDB.keys(); } catch (e) { return; }
+    const used = new Set();
+    for (const m of state.maps) {
+      if (m.bg && !isInline(m.bg)) used.add(m.bg);
+      for (const p of m.pieces) if (p.img && !isInline(p.img)) used.add(p.img);
+    }
+    for (const k of keys) if (!used.has(k)) {
+      try { await IDB.del(k); } catch (e) {}
+      const u = urlCache.get(k); if (u) { URL.revokeObjectURL(u); urlCache.delete(k); }
+    }
+  }
+
+  /* ---------------------------------------------------------
      COORDINATE HELPERS
      --------------------------------------------------------- */
   function screenToWorld(sx, sy) {
@@ -314,8 +448,10 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
 
   function renderBg() {
     const m = cur();
-    if (m.bg) {
-      bgImage.src = m.bg; bgImage.hidden = false; boardHint.hidden = true;
+    const url = imgURL(m.bg);
+    if (m.bg && !url) ensureImage(m.bg).then(u => { if (u && cur() === m) renderBg(); }); // resolve async
+    if (url) {
+      bgImage.src = url; bgImage.hidden = false; boardHint.hidden = true;
     } else {
       bgImage.removeAttribute("src"); bgImage.hidden = true;
       boardHint.hidden = !!(m.pieces.length || m.shapes.length);
@@ -403,6 +539,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     const dark = state.lighting === "dark";
     const segs = dark ? mapSegments(m) : null;
     const pPolys = dark ? playerVisionPolys(m, segs) : null;
+    let needPreload = false;
     for (const p of m.pieces) {
       if (p.hidden) continue; // hidden pieces live only in the sidebar
       if (dark && p.tag === "enemy" && !seenByPlayers(p, pPolys)) continue; // unseen in the dark
@@ -415,9 +552,11 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       el.style.left = (p.x - size / 2) + "px";
       el.style.top = (p.y - size / 2) + "px";
       el.style.borderColor = down ? "#8c8c84" : p.color;
-      if (p.img) {
-        el.style.backgroundImage = `url(${p.img})`;
+      const iu = imgURL(p.img);
+      if (iu) {
+        el.style.backgroundImage = `url("${iu}")`;
       } else {
+        if (p.img) needPreload = true; // ref not resolved yet
         const initial = (p.name || "?").trim().charAt(0).toUpperCase() || "?";
         el.innerHTML = `<span class="tk-initial" style="font-size:${size*0.5}px">${initial}</span>`;
       }
@@ -436,6 +575,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       tokenLayer.appendChild(el);
     }
     renderFog(dark ? { segs, polys: pPolys } : null);
+    if (needPreload) preloadImages(m);
   }
 
   function isSelected(kind, id) {
@@ -913,7 +1053,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       const rm = document.createElement("button");
       rm.className = "btn small ghost";
       rm.textContent = "Remove";
-      rm.onclick = () => { p.img = null; renderTokens(); save(); openEditor(); };
+      rm.onclick = () => { p.img = null; renderTokens(); save(); openEditor(); gcImages(); };
       imgRow.appendChild(rm);
     }
     imgF.appendChild(imgRow);
@@ -1105,6 +1245,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     openEditor();
     syncGridInputs();
     renderTabs(); renderAll();
+    preloadImages(cur());
     save();
   }
   function addMap() {
@@ -1131,7 +1272,8 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     if (state.activeMapId === id) state.activeMapId = state.maps[Math.max(0, idx - 1)].id;
     openEditor();
     syncGridInputs();
-    renderTabs(); renderAll(); save();
+    renderTabs(); renderAll(); preloadImages(cur()); save();
+    gcImages();
   }
 
   /* ---------------------------------------------------------
@@ -1405,40 +1547,34 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   bgFileInput.onchange = () => {
     const f = bgFileInput.files[0];
     if (!f) return;
-    readImage(f, (dataUrl, w, h) => {
+    const prev = cur().bg;
+    processImageFile(f, 4096, (id, w, h) => {
+      if (!id) { toast("Couldn't load that image.", true); return; }
       const m = cur();
-      m.bg = dataUrl; m.worldW = w; m.worldH = h;
+      m.bg = id; m.worldW = w; m.worldH = h;
       const r = board.getBoundingClientRect();
       const s = clampScale(Math.min(r.width / w, r.height / h, 1) * 0.92);
       m.view.scale = s; m.view.tx = (r.width - w * s) / 2; m.view.ty = (r.height - h * s) / 2;
       renderAll(); save();
+      if (prev) gcImages();
       toast("Map loaded. Set grid Size to match the squares.");
     });
     bgFileInput.value = "";
   };
-  $("#clear-bg-btn").onclick = () => { cur().bg = null; renderAll(); save(); };
+  $("#clear-bg-btn").onclick = () => { cur().bg = null; renderAll(); save(); gcImages(); };
 
   pieceFileInput.onchange = () => {
     const f = pieceFileInput.files[0];
     if (!f || !pieceFileTarget) return;
-    readImage(f, (dataUrl) => {
-      const p = cur().pieces.find(o => o.id === pieceFileTarget);
-      if (p) { p.img = dataUrl; renderTokens(); save(); openEditor(); }
+    const targetId = pieceFileTarget;
+    processImageFile(f, 1024, (id) => {
+      if (!id) { toast("Couldn't load that image.", true); return; }
+      const p = cur().pieces.find(o => o.id === targetId);
+      if (p) { p.img = id; renderTokens(); save(); openEditor(); gcImages(); }
       pieceFileTarget = null;
     });
     pieceFileInput.value = "";
   };
-
-  function readImage(file, cb) {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const img = new Image();
-      img.onload = () => cb(reader.result, img.naturalWidth, img.naturalHeight);
-      img.onerror = () => cb(reader.result, 1200, 800);
-      img.src = reader.result;
-    };
-    reader.readAsDataURL(file);
-  }
 
   /* ---------------------------------------------------------
      TOOLBAR WIRING
@@ -1524,7 +1660,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     const { kind, id } = m.selected;
     if (kind === "piece") m.pieces = m.pieces.filter(p => p.id !== id);
     else m.shapes = m.shapes.filter(s => s.id !== id);
-    deselect(); renderAll(); save();
+    deselect(); renderAll(); save(); gcImages();
   };
 
   // Toolbar collapse
@@ -1580,27 +1716,41 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     const f = importFileInput.files[0];
     if (!f) return;
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       try {
         adopt(JSON.parse(reader.result));
         setDrawMode(false);
         $("#vision-toggle").classList.toggle("active", state.visionShow);
         applyLighting();
-        applyPanels(); applyToolbar(); syncGridInputs(); renderTabs(); renderAll(); save();
+        applyPanels(); applyToolbar(); syncGridInputs(); renderTabs(); renderAll();
+        await migrateInlineImages();   // move embedded images into IndexedDB
+        await preloadImages(cur());
+        gcImages(); save();
         toast("Map imported.");
       } catch (err) { toast("Import failed — invalid file.", true); }
     };
     reader.readAsText(f);
     importFileInput.value = "";
   };
-  function exportData() {
-    const blob = new Blob([JSON.stringify({
-      maps: state.maps, activeMapId: state.activeMapId, seq: state.seq, sidebarOpen: state.sidebarOpen,
-    }, null, 2)], { type: "application/json" });
+  async function exportData() {
+    toast("Preparing export…");
+    const payload = {
+      maps: JSON.parse(JSON.stringify(state.maps)),
+      activeMapId: state.activeMapId, seq: state.seq,
+      enemiesOpen: state.enemiesOpen, editorOpen: state.editorOpen,
+      toolbarOpen: state.toolbarOpen, visionShow: state.visionShow, lighting: state.lighting,
+    };
+    // embed images inline so the export is self-contained
+    for (const m of payload.maps) {
+      if (m.bg && !isInline(m.bg)) { const b = await IDB.get(m.bg); if (b) m.bg = await blobToDataURL(b); }
+      for (const p of m.pieces) if (p.img && !isInline(p.img)) { const b = await IDB.get(p.img); if (b) p.img = await blobToDataURL(b); }
+    }
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url; a.download = "field-map.json"; a.click();
     URL.revokeObjectURL(url);
+    toast("Exported (images embedded).");
   }
 
   $("#reset-btn").onclick = () => {
@@ -1608,7 +1758,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     const m = newMap("Map 1");
     state.maps = [m]; state.activeMapId = m.id;
     openEditor();
-    syncGridInputs(); renderTabs(); renderAll(); fitView(); save();
+    syncGridInputs(); renderTabs(); renderAll(); fitView(); save(); gcImages();
     toast("Board cleared.");
   };
 
@@ -1710,4 +1860,6 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   openEditor();
   const m0 = cur();
   if (!m0.bg && !m0.pieces.length && !m0.shapes.length) fitView();
+  // images: migrate any legacy inline images out of localStorage, load refs, clean orphans
+  migrateInlineImages().then(() => preloadImages(cur())).then(gcImages);
 })();
