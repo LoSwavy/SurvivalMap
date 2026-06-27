@@ -203,10 +203,11 @@ button, input, select, textarea { font-family: inherit; color: inherit; }
   -webkit-user-drag: none; -khtml-user-drag: none; -moz-user-drag: none; -o-user-drag: none;
 }
 .bg-image[hidden] { display: none; }
-.grid-layer, .shape-layer, .vision-layer, .wall-layer, .fog-layer {
+.grid-layer, .shape-layer, .vision-layer, .wall-layer, .fog-layer, .light-layer {
   position: absolute; top: 0; left: 0; overflow: visible;
   pointer-events: none;
 }
+.light-layer { mix-blend-mode: screen; }
 .shape-layer { pointer-events: none; }
 .board.draw-mode { cursor: crosshair; }
 .token-layer { position: absolute; top: 0; left: 0; }
@@ -340,6 +341,26 @@ button, input, select, textarea { font-family: inherit; color: inherit; }
 .preset-chip:hover { background: var(--card-hi); }
 .preset-chip.active { border-color: var(--green-deep); background: var(--green-glow); color: var(--green); }
 .preset-chip .pc-dot { width: 9px; height: 9px; border-radius: 50%; border: 1px solid rgba(0,0,0,0.4); }
+
+/* ====================== MODAL ====================== */
+.modal-overlay {
+  position: fixed; inset: 0; z-index: 50; padding: 20px;
+  background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center;
+}
+.modal-overlay[hidden] { display: none; }
+.modal {
+  width: 340px; max-width: 100%;
+  background: linear-gradient(170deg, var(--panel-2), var(--panel));
+  border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-lg);
+  display: flex; flex-direction: column;
+}
+.modal-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--line-soft); }
+.modal-head h3 { font-size: 0.95rem; color: var(--text); }
+.modal-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.modal-hint { font-size: 0.8rem; color: var(--text-dim); text-transform: none; line-height: 1.4; }
+.modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 16px; border-top: 1px solid var(--line-soft); }
+.check { display: flex; align-items: center; gap: 9px; font-size: 0.86rem; color: var(--text); cursor: pointer; text-transform: none; }
+.check input { width: 17px; height: 17px; accent-color: var(--green-deep); cursor: pointer; }
 
 /* ====================== TOAST ====================== */
 .toast {
@@ -479,6 +500,18 @@ button, input, select, textarea { font-family: inherit; color: inherit; }
 .draw-rot[hidden] { display: none; }
 .draw-rot input[type=range] { width: 90px; accent-color: #7fd0ff; }
 .draw-btn[hidden] { display: none; }
+.draw-hint { font-size: 0.72rem; color: var(--text-faint); text-transform: none; }
+
+/* light edit handles */
+.light-handle {
+  position: absolute; transform: translate(-50%,-50%);
+  width: 24px; height: 24px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(20,16,8,0.85); border: 2px solid #ffd9a0; color: #ffd9a0;
+  font-size: 13px; cursor: grab; user-select: none;
+  box-shadow: 0 0 10px rgba(255,217,160,0.5);
+}
+.light-handle.sel { box-shadow: 0 0 0 2px #fff, 0 0 12px rgba(255,217,160,0.7); }
 
 /* ====================== TOOLBAR COLLAPSE ====================== */
 .tb-collapse {
