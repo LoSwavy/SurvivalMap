@@ -112,6 +112,7 @@ button, input, select, textarea { font-family: inherit; color: inherit; }
 .btn.accent:hover { background: linear-gradient(180deg, var(--green), var(--green-deep)); }
 .btn.ghost { background: transparent; }
 .btn.ghost:hover { background: var(--card); }
+.btn.active { border-color: var(--green-deep); color: var(--green); background: var(--green-glow); }
 .btn.danger-ghost { background: transparent; color: #d98072; border-color: var(--red-deep); }
 .btn.danger-ghost:hover { background: rgba(184,72,58,0.14); }
 .zoom-btn { min-width: 34px; text-align: center; font-size: 1rem; line-height: 1; }
@@ -185,11 +186,12 @@ button, input, select, textarea { font-family: inherit; color: inherit; }
 }
 .bg-image { display: block; pointer-events: none; user-select: none; -webkit-user-drag: none; }
 .bg-image[hidden] { display: none; }
-.grid-layer, .shape-layer {
+.grid-layer, .shape-layer, .vision-layer, .wall-layer {
   position: absolute; top: 0; left: 0; overflow: visible;
   pointer-events: none;
 }
 .shape-layer { pointer-events: none; }
+.board.draw-mode { cursor: crosshair; }
 .token-layer { position: absolute; top: 0; left: 0; }
 
 .board-hint {
@@ -429,6 +431,37 @@ button, input, select, textarea { font-family: inherit; color: inherit; }
 .token.downed { opacity: 0.42; filter: grayscale(1); box-shadow: 0 2px 6px rgba(0,0,0,0.5); }
 .token.downed .tk-initial { color: #9a9a92; }
 .token.downed .tk-label { background: rgba(16,18,8,0.7); color: #9a9a92; border-color: #4a4a44; }
+
+/* ====================== DRAW (WALLS) TOOLBAR ====================== */
+.draw-bar {
+  position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%);
+  z-index: 28; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  max-width: calc(100% - 24px);
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow-lg); padding: 8px 12px;
+}
+.draw-bar[hidden] { display: none; }
+.draw-title { font-size: 0.66rem; letter-spacing: 1px; text-transform: uppercase; color: var(--green); font-weight: 700; }
+.draw-tools { display: flex; gap: 4px; }
+.draw-tool {
+  background: var(--bg-2); border: 1px solid var(--line); color: var(--text-dim);
+  border-radius: 6px; padding: 7px 11px; cursor: pointer; font-size: 0.78rem; font-weight: 600;
+}
+.draw-tool:hover { background: var(--card); color: var(--text); }
+.draw-tool.active { color: #7fd0ff; border-color: #3f6f8a; background: rgba(127,208,255,0.12); }
+.draw-btn {
+  background: var(--card); border: 1px solid var(--line); color: var(--text);
+  border-radius: 6px; padding: 7px 11px; cursor: pointer; font-size: 0.78rem; font-weight: 600;
+}
+.draw-btn:hover:not(:disabled) { background: var(--card-hi); }
+.draw-btn:disabled { opacity: 0.4; cursor: default; }
+.draw-btn.danger { color: #d98072; border-color: var(--red-deep); }
+.draw-sep { width: 1px; align-self: stretch; background: var(--line-soft); }
+.draw-rot { display: flex; align-items: center; gap: 7px; font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-faint); }
+.draw-rot[hidden] { display: none; }
+.draw-rot input[type=range] { width: 90px; accent-color: #7fd0ff; }
+.draw-btn[hidden] { display: none; }
 
 /* ====================== TOOLBAR COLLAPSE ====================== */
 .tb-collapse {
