@@ -707,15 +707,19 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     visionLayer.setAttribute("height", m.worldH);
     if (!state.visionShow) { visionLayer.innerHTML = ""; return; }
     const segs = mapSegments(m);
-    const pPolys = playerVisionPolys(m, segs);
     const dark = state.lighting === "dark";
-    const reveal = dark ? pPolys.concat(lightPolys(m, segs)) : null;
+    const cap = dark ? PLAYER_DARK_RANGE : Infinity;
     const toPts = poly => poly.map(pt => `${pt[0].toFixed(1)},${pt[1].toFixed(1)}`).join(" ");
     let svg = "";
-    // player line-of-sight (cool light)
-    for (const poly of pPolys) {
-      svg += `<polygon points="${toPts(poly)}" fill="#cfe3ff" fill-opacity="0.16" stroke="#cfe3ff" stroke-opacity="0.28" stroke-width="1"/>`;
+    // player line-of-sight — faint, tinted to each player's own color
+    const pPolys = [];
+    for (const p of m.pieces) {
+      if (p.tag !== "player" || !canSee(p)) continue;
+      const poly = visionPolygon({ x: p.x, y: p.y, vision: { range: Math.min(p.vision.range, cap), angle: p.vision.angle, dir: p.vision.dir } }, segs);
+      pPolys.push(poly);
+      svg += `<polygon points="${toPts(poly)}" fill="${p.color}" fill-opacity="0.07" stroke="${p.color}" stroke-opacity="0.2" stroke-width="1"/>`;
     }
+    const reveal = dark ? pPolys.concat(lightPolys(m, segs)) : null;
     // enemy vision (warm yellow) — concealed enemies don't reveal a cone
     for (const p of m.pieces) {
       if (p.tag !== "enemy" || !canSee(p)) continue;
@@ -763,7 +767,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
           <g filter="url(#fogfeather)">${holes}</g>
         </mask>
       </defs>
-      <rect width="${m.worldW}" height="${m.worldH}" fill="#02030a" fill-opacity="0.985" mask="url(#fogmask)"/>`;
+      <rect width="${m.worldW}" height="${m.worldH}" fill="#02030a" fill-opacity="0.95" mask="url(#fogmask)"/>`;
   }
 
   // Lights: soft warm glow (clipped by walls). Edit handles show in lights mode.
@@ -1352,20 +1356,23 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   function renameMap(id) {
     const m = state.maps.find(x => x.id === id);
     if (!m) return;
-    const name = prompt("Rename map:", m.name);
-    if (name != null && name.trim()) { m.name = name.trim(); renderTabs(); save(); }
+    uiPrompt("Rename this map:", m.name, { title: "Rename Map", okLabel: "Rename" }).then(name => {
+      if (name != null && name.trim()) { m.name = name.trim(); renderTabs(); save(); }
+    });
   }
   function closeMap(id) {
     if (state.maps.length === 1) { toast("Keep at least one map.", true); return; }
     const m = state.maps.find(x => x.id === id);
-    if (!confirm(`Close “${m.name}”? Its pieces and overlays are removed.`)) return;
-    const idx = state.maps.findIndex(x => x.id === id);
-    state.maps.splice(idx, 1);
-    if (state.activeMapId === id) state.activeMapId = state.maps[Math.max(0, idx - 1)].id;
-    openEditor();
-    syncGridInputs();
-    renderTabs(); renderAll(); preloadImages(cur()); save();
-    gcImages();
+    uiConfirm(`Close “${m.name}”? Its pieces and overlays are removed.`, { title: "Close Map", okLabel: "Close", danger: true }).then(ok => {
+      if (!ok) return;
+      const idx = state.maps.findIndex(x => x.id === id);
+      state.maps.splice(idx, 1);
+      if (state.activeMapId === id) state.activeMapId = state.maps[Math.max(0, idx - 1)].id;
+      openEditor();
+      syncGridInputs();
+      renderTabs(); renderAll(); preloadImages(cur()); save();
+      gcImages();
+    });
   }
 
   /* ---------------------------------------------------------
@@ -1920,16 +1927,23 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   }
 
   $("#reset-btn").onclick = () => {
-    if (!confirm("Clear everything? All tabs, maps, pieces and overlays are removed.")) return;
+    uiConfirm("Clear everything? All tabs, maps, pieces and overlays are removed.", { title: "Reset Board", okLabel: "Clear", danger: true }).then(ok => {
+    if (!ok) return;
     const m = newMap("Map 1");
     state.maps = [m]; state.activeMapId = m.id;
     openEditor();
     syncGridInputs(); renderTabs(); renderAll(); fitView(); save(); gcImages();
     toast("Board cleared.");
+    });
   };
 
   // Keyboard
   window.addEventListener("keydown", e => {
+    if (!dialogModal.hidden) {
+      if (e.key === "Enter") { e.preventDefault(); dlgOk.onclick(); }
+      else if (e.key === "Escape") { e.preventDefault(); dlgCancel.onclick(); }
+      return;
+    }
     if (!newmapModal.hidden) { if (e.key === "Escape") closeNewMapDialog(); return; }
     if (e.target.matches("input, textarea, select")) return;
     const z = (e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z");
@@ -2002,6 +2016,53 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     tokenLayer.appendChild(el);
     setTimeout(() => el.remove(), 700);
   }
+
+  /* ---------------------------------------------------------
+     CUSTOM DIALOGS — themed replacements for alert/confirm/prompt
+     --------------------------------------------------------- */
+  const dialogModal = $("#dialog-modal");
+  const dlgTitle = $("#dialog-title"), dlgMsg = $("#dialog-msg");
+  const dlgInput = $("#dialog-input"), dlgOk = $("#dialog-ok"), dlgCancel = $("#dialog-cancel"), dlgX = $("#dialog-x");
+  let dialogResolve = null;
+
+  function settleDialog(value) {
+    if (!dialogResolve) return;
+    const r = dialogResolve; dialogResolve = null;
+    dialogModal.hidden = true;
+    r(value);
+  }
+  function openDialog(opts) {
+    // resolve any dialog already open (shouldn't happen, but stay safe)
+    if (dialogResolve) settleDialog(opts.withInput ? null : false);
+    dlgTitle.textContent = opts.title || "Confirm";
+    dlgMsg.textContent = opts.message || "";
+    dlgMsg.hidden = !opts.message;
+    dlgOk.textContent = opts.okLabel || "OK";
+    dlgCancel.textContent = opts.cancelLabel || "Cancel";
+    dlgCancel.hidden = !!opts.hideCancel;
+    dlgOk.classList.toggle("danger-ghost", !!opts.danger);
+    dlgOk.classList.toggle("accent", !opts.danger);
+    if (opts.withInput) {
+      dlgInput.hidden = false;
+      dlgInput.value = opts.defaultValue || "";
+    } else {
+      dlgInput.hidden = true;
+    }
+    dialogModal.hidden = false;
+    return new Promise(res => {
+      dialogResolve = res;
+      if (opts.withInput) { dlgInput.focus(); dlgInput.select(); }
+      else dlgOk.focus();
+    });
+  }
+  function uiAlert(message, opts = {}) { return openDialog({ title: opts.title || "Notice", message, okLabel: opts.okLabel || "OK", hideCancel: true }); }
+  function uiConfirm(message, opts = {}) { return openDialog({ title: opts.title || "Confirm", message, okLabel: opts.okLabel || "OK", cancelLabel: opts.cancelLabel, danger: opts.danger }).then(v => v === true); }
+  function uiPrompt(message, defaultValue = "", opts = {}) { return openDialog({ title: opts.title || "Edit", message, okLabel: opts.okLabel || "Save", withInput: true, defaultValue }); }
+
+  dlgOk.onclick = () => settleDialog(dlgInput.hidden ? true : dlgInput.value);
+  dlgCancel.onclick = () => settleDialog(dlgInput.hidden ? false : null);
+  dlgX.onclick = () => settleDialog(dlgInput.hidden ? false : null);
+  dialogModal.onclick = e => { if (e.target === dialogModal) dlgX.onclick(); };
 
   /* ---------------------------------------------------------
      TOAST
