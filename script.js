@@ -160,13 +160,17 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     toolbarOpen: true,
     visionShow: true,
     lighting: "light",   // "light" | "dark" (dark hides enemies outside player LOS)
-    // draw-mode runtime (not persisted)
-    drawMode: false,
+    // edit-mode runtime (not persisted)
+    drawMode: false,    // walls editor
     drawTool: "line",
     selectedWall: null,
+    lightMode: false,   // lights editor
+    selectedLight: null,
   };
   const blindPreset = id => id === "clicker" || id === "bloater";
-  const defaultVision = presetId => ({ on: !blindPreset(presetId), range: 30, angle: 90, dir: 0 });
+  const PLAYER_DARK_RANGE = 60; // players see only 60 ft in darkness (lights extend it)
+  const defaultVision = presetId =>
+    ({ on: !blindPreset(presetId), range: presetId === "player" ? 240 : 30, angle: 90, dir: 0 });
   const nextId = () => "o" + (state.seq++) + "_" + Math.random().toString(36).slice(2, 6);
   const cur = () => state.maps.find(m => m.id === state.activeMapId) || state.maps[0];
 
@@ -177,7 +181,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       bg: null, worldW: 3000, worldH: 2000,
       grid: { size: 60, offX: 0, offY: 0, color: "#a7bd6e", show: true, snap: true },
       view: { tx: 60, ty: 60, scale: 1 },
-      pieces: [], shapes: [], selected: null,
+      pieces: [], shapes: [], walls: [], lights: [], selected: null,
     };
   }
 
@@ -193,8 +197,10 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   const shapeLayer  = $("#shape-layer");
   const wallLayer   = $("#wall-layer");
   const fogLayer    = $("#fog-layer");
+  const lightLayer  = $("#light-layer");
   const tokenLayer  = $("#token-layer");
   const drawBar     = $("#draw-bar");
+  const lightBar    = $("#light-bar");
   const boardHint   = $("#board-hint");
   const enemiesPanel = $("#enemies-panel");
   const editorPanel = $("#editor-panel");
@@ -252,6 +258,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       pieces: (m.pieces || []).map(normPiece),
       shapes: m.shapes || [],
       walls: m.walls || [],
+      lights: m.lights || [],
       selected: null,
     };
   }
@@ -538,11 +545,11 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     const size = Math.max(20, m.grid.size);
     const dark = state.lighting === "dark";
     const segs = dark ? mapSegments(m) : null;
-    const pPolys = dark ? playerVisionPolys(m, segs) : null;
+    const reveal = dark ? revealPolys(m, segs) : null; // player LOS + light glows
     let needPreload = false;
     for (const p of m.pieces) {
       if (p.hidden) continue; // hidden pieces live only in the sidebar
-      if (dark && p.tag === "enemy" && !seenByPlayers(p, pPolys)) continue; // unseen in the dark
+      if (dark && p.tag === "enemy" && !seenByPlayers(p, reveal)) continue; // unseen in the dark
       const down = p.hpMax > 0 && p.hp <= 0;
       const el = document.createElement("div");
       el.className = "token " + p.tag + (isSelected("piece", p.id) ? " selected" : "") + (down ? " downed" : "");
@@ -574,7 +581,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       }
       tokenLayer.appendChild(el);
     }
-    renderFog(dark ? { segs, polys: pPolys } : null);
+    renderFog(dark ? { segs, polys: reveal } : null);
     if (needPreload) preloadImages(m);
   }
 
@@ -584,7 +591,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   }
 
   function renderAll() {
-    renderBg(); renderGrid(); renderVision(); renderShapes(); renderWalls(); renderTokens();
+    renderBg(); renderGrid(); renderVision(); renderShapes(); renderWalls(); renderLights(); renderTokens();
     applyView(); renderObjects(); renderSidebar();
   }
 
@@ -619,7 +626,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   }
   function mapSegments(m) {
     const out = [];
-    for (const w of m.walls) for (const s of wallToSegments(w)) out.push(s);
+    for (const w of (m.walls || [])) for (const s of wallToSegments(w)) out.push(s);
     return out;
   }
   function pointInPoly(x, y, poly) {
@@ -632,15 +639,19 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   }
   const canSee = p => p && p.vision && p.vision.on && !p.hidden && !(p.hpMax > 0 && p.hp <= 0);
   function playerVisionPolys(m, segs) {
-    return m.pieces.filter(pl => pl.tag === "player" && canSee(pl)).map(pl => visionPolygon(pl, segs));
+    const cap = state.lighting === "dark" ? PLAYER_DARK_RANGE : Infinity;
+    return m.pieces.filter(pl => pl.tag === "player" && canSee(pl)).map(pl =>
+      visionPolygon({ x: pl.x, y: pl.y, vision: { range: Math.min(pl.vision.range, cap), angle: pl.vision.angle, dir: pl.vision.dir } }, segs));
   }
+  // a placed light reveals a 360° area out to its radius, blocked by walls
+  function lightPolygon(l, segs) {
+    return visionPolygon({ x: l.x, y: l.y, vision: { range: l.radius, angle: 360, dir: 0 } }, segs);
+  }
+  function lightPolys(m, segs) { return (m.lights || []).map(l => lightPolygon(l, segs)); }
+  // everything that reveals the dark: player line of sight + light glows
+  function revealPolys(m, segs) { return playerVisionPolys(m, segs).concat(lightPolys(m, segs)); }
   function seenByPlayers(p, polys) {
     return polys.some(poly => pointInPoly(p.x, p.y, poly));
-  }
-  // an enemy is concealed by darkness when no player can see it
-  function darkHidden(p, m, segs, polys) {
-    if (state.lighting !== "dark" || p.tag !== "enemy") return false;
-    return !seenByPlayers(p, polys || playerVisionPolys(m, segs || mapSegments(m)));
   }
 
   // nearest hit distance of a ray (origin px,py, unit dir dx,dy) against segments
@@ -697,6 +708,8 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     if (!state.visionShow) { visionLayer.innerHTML = ""; return; }
     const segs = mapSegments(m);
     const pPolys = playerVisionPolys(m, segs);
+    const dark = state.lighting === "dark";
+    const reveal = dark ? pPolys.concat(lightPolys(m, segs)) : null;
     const toPts = poly => poly.map(pt => `${pt[0].toFixed(1)},${pt[1].toFixed(1)}`).join(" ");
     let svg = "";
     // player line-of-sight (cool light)
@@ -706,7 +719,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     // enemy vision (warm yellow) — concealed enemies don't reveal a cone
     for (const p of m.pieces) {
       if (p.tag !== "enemy" || !canSee(p)) continue;
-      if (darkHidden(p, m, segs, pPolys)) continue;
+      if (dark && !seenByPlayers(p, reveal)) continue;
       svg += `<polygon points="${toPts(visionPolygon(p, segs))}" fill="#f2e27a" fill-opacity="0.13" stroke="#f2e27a" stroke-opacity="0.22" stroke-width="1"/>`;
     }
     visionLayer.innerHTML = svg;
@@ -736,9 +749,9 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     const m = cur();
     fogLayer.setAttribute("width", m.worldW);
     fogLayer.setAttribute("height", m.worldH);
-    if (state.lighting !== "dark" || state.drawMode) { fogLayer.innerHTML = ""; return; }
+    if (state.lighting !== "dark" || state.drawMode || state.lightMode) { fogLayer.innerHTML = ""; return; }
     const segs = (ctx && ctx.segs) || mapSegments(m);
-    const polys = (ctx && ctx.polys) || playerVisionPolys(m, segs);
+    const polys = (ctx && ctx.polys) || revealPolys(m, segs);
     const holes = polys.map(poly =>
       `<polygon points="${poly.map(p => p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ")}" fill="#000"/>`
     ).join("");
@@ -751,6 +764,41 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
         </mask>
       </defs>
       <rect width="${m.worldW}" height="${m.worldH}" fill="#02030a" fill-opacity="0.985" mask="url(#fogmask)"/>`;
+  }
+
+  // Lights: soft warm glow (clipped by walls). Edit handles show in lights mode.
+  function renderLights() {
+    const m = cur();
+    lightLayer.setAttribute("width", m.worldW);
+    lightLayer.setAttribute("height", m.worldH);
+    const segs = mapSegments(m);
+    const toPts = poly => poly.map(p => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
+    let defs = "", body = "";
+    (m.lights || []).forEach((l, i) => {
+      const rPx = feetToPx(l.radius);
+      const gid = "lglow" + i;
+      defs += `<radialGradient id="${gid}" gradientUnits="userSpaceOnUse" cx="${l.x}" cy="${l.y}" r="${Math.max(1, rPx)}">
+        <stop offset="0" stop-color="${l.color}" stop-opacity="0.5"/>
+        <stop offset="0.55" stop-color="${l.color}" stop-opacity="0.22"/>
+        <stop offset="1" stop-color="${l.color}" stop-opacity="0"/>
+      </radialGradient>`;
+      body += `<polygon points="${toPts(lightPolygon(l, segs))}" fill="url(#${gid})"/>`;
+    });
+    lightLayer.innerHTML = defs ? `<defs>${defs}</defs>${body}` : "";
+
+    // draggable handles only while editing lights
+    tokenLayer.querySelectorAll(".light-handle").forEach(n => n.remove());
+    if (state.lightMode) {
+      for (const l of (m.lights || [])) {
+        const el = document.createElement("div");
+        el.className = "light-handle" + (state.selectedLight === l.id ? " sel" : "");
+        el.dataset.lightId = l.id;
+        el.style.left = l.x + "px";
+        el.style.top = l.y + "px";
+        el.textContent = "☀";
+        tokenLayer.appendChild(el);
+      }
+    }
   }
 
   /* ---------------------------------------------------------
@@ -772,7 +820,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     h.future.push(JSON.stringify(m.walls));
     m.walls = JSON.parse(h.past.pop());
     state.selectedWall = null;
-    renderWalls(); renderVision(); updateWallEditUI(); updateUndoRedo(); save();
+    renderWalls(); renderVision(); renderLights(); updateWallEditUI(); updateUndoRedo(); save();
   }
   function redo() {
     const m = cur(), h = hist(m.id);
@@ -780,7 +828,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     h.past.push(JSON.stringify(m.walls));
     m.walls = JSON.parse(h.future.pop());
     state.selectedWall = null;
-    renderWalls(); renderVision(); updateWallEditUI(); updateUndoRedo(); save();
+    renderWalls(); renderVision(); renderLights(); updateWallEditUI(); updateUndoRedo(); save();
   }
   function updateUndoRedo() {
     const h = hist(cur().id);
@@ -790,12 +838,42 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   function setDrawMode(on) {
     state.drawMode = on;
     state.selectedWall = null;
+    if (on) setLightMode(false);
     drawBar.hidden = !on;
     board.classList.toggle("draw-mode", on);
     $("#draw-walls-btn").classList.toggle("active", on);
     if (on) deselect();
     updateWallEditUI(); updateUndoRedo();
     renderWalls(); renderTokens();
+  }
+
+  /* ---------------------------------------------------------
+     LIGHTS editor — place/move/delete glowing lights
+     --------------------------------------------------------- */
+  const lightDefaults = { radius: 30, color: "#ffd9a0" };
+  function selectedLightObj() { return (cur().lights || []).find(l => l.id === state.selectedLight) || null; }
+  function setLightMode(on) {
+    state.lightMode = on;
+    state.selectedLight = null;
+    if (on) setDrawMode(false);
+    lightBar.hidden = !on;
+    board.classList.toggle("draw-mode", on);
+    $("#draw-lights-btn").classList.toggle("active", on);
+    if (on) deselect();
+    updateLightUI();
+    renderLights(); renderTokens();
+  }
+  function updateLightUI() {
+    const l = selectedLightObj();
+    const r = l ? l.radius : lightDefaults.radius;
+    const c = l ? l.color : lightDefaults.color;
+    $("#light-radius").value = r;
+    $("#light-radius-val").textContent = r + " ft";
+    $("#light-color").value = c;
+    $("#light-delete").hidden = !l;
+  }
+  function lightChanged() {
+    renderLights(); renderVision(); renderTokens(); save();
   }
   function setDrawTool(tool) {
     state.drawTool = tool;
@@ -1248,13 +1326,27 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     preloadImages(cur());
     save();
   }
-  function addMap() {
+  function addMap() { openNewMapDialog(); }
+  function createMap(opts) {
+    const src = cur();
     const m = newMap();
+    if (opts.background) {
+      m.bg = src.bg; m.worldW = src.worldW; m.worldH = src.worldH;
+      m.grid = { ...src.grid }; m.view = { ...src.view };
+    }
+    const clone = o => { const c = JSON.parse(JSON.stringify(o)); c.id = nextId(); return c; };
+    if (opts.players) for (const p of src.pieces) if (p.tag === "player") m.pieces.push(clone(p));
+    if (opts.enemies) for (const p of src.pieces) if (p.tag === "enemy") m.pieces.push(clone(p));
+    if (opts.overlays) for (const s of src.shapes) m.shapes.push(clone(s));
+    if (opts.walls) for (const w of src.walls) m.walls.push(clone(w));
+    if (opts.lights) for (const l of (src.lights || [])) m.lights.push(clone(l));
     state.maps.push(m);
     state.activeMapId = m.id;
     openEditor();
     syncGridInputs();
-    renderTabs(); renderAll(); fitView();
+    renderTabs(); renderAll();
+    if (!opts.background) fitView();
+    preloadImages(cur());
     save();
   }
   function renameMap(id) {
@@ -1332,6 +1424,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       pinch = { dist: dist(pts[0], pts[1]), scale: cur().view.scale, cx: (pts[0].x + pts[1].x) / 2, cy: (pts[0].y + pts[1].y) / 2 };
       return;
     }
+    if (state.lightMode) { startLightDraw(e); return; }
     if (state.drawMode) { startDraw(e); return; }
     // right-click on an enemy → aim/rotate its vision cone by moving the mouse
     if (e.button === 2) {
@@ -1390,8 +1483,15 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       return;
     }
     const w = screenToWorld(e.clientX, e.clientY);
+    if (drag.kind === "lightmove") {
+      const l = cur().lights.find(x => x.id === drag.id);
+      if (!l) return;
+      l.x = w.x - drag.dx; l.y = w.y - drag.dy; drag.moved = true;
+      renderLights();
+      return;
+    }
     if (drag.kind === "erase") {
-      if (eraseAt(w.x, w.y)) { renderWalls(); renderVision(); }
+      if (eraseAt(w.x, w.y)) { renderWalls(); renderVision(); renderLights(); }
       return;
     }
     if (drag.kind === "create") {
@@ -1433,16 +1533,17 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     if (!drag) return;
     const d = drag; drag = null;
     if (d.kind === "cone") { renderVision(); if (state.lighting === "dark") renderTokens(); save(); return; }
-    if (d.kind === "erase") { renderVision(); save(); return; }
-    if (d.kind === "wallmove") { if (d.moved) { renderVision(); save(); } updateWallEditUI(); return; }
+    if (d.kind === "lightmove") { renderLights(); updateLightUI(); save(); return; }
+    if (d.kind === "erase") { renderVision(); renderLights(); save(); return; }
+    if (d.kind === "wallmove") { if (d.moved) { renderVision(); renderLights(); save(); } updateWallEditUI(); return; }
     if (d.kind === "create") {
       drawPreview = "";
       const wall = commitWall(d);
       if (wall) { snapshot(); cur().walls.push(wall); state.selectedWall = null; }
-      renderWalls(); renderVision(); updateWallEditUI(); save();
+      renderWalls(); renderVision(); renderLights(); updateWallEditUI(); save();
       return;
     }
-    if (d.kind === "pan") { if (!d.moved && !state.drawMode) deselect(); else save(); return; }
+    if (d.kind === "pan") { if (!d.moved && !state.drawMode && !state.lightMode) deselect(); else save(); return; }
     if (d.kind === "piece") {
       const p = cur().pieces.find(o => o.id === d.id);
       if (p) {
@@ -1515,6 +1616,28 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       return;
     }
     drag = { kind: "create", tool, x0: w.x, y0: w.y, x1: w.x, y1: w.y };
+  }
+  function startLightDraw(e) {
+    if (e.button === 2 || e.button === 1) {
+      drag = { kind: "pan", startTx: cur().view.tx, startTy: cur().view.ty, startX: e.clientX, startY: e.clientY, moved: false };
+      board.classList.add("panning");
+      return;
+    }
+    const w = screenToWorld(e.clientX, e.clientY);
+    const handle = e.target.closest(".light-handle");
+    if (handle) {
+      const id = handle.dataset.lightId;
+      const l = cur().lights.find(x => x.id === id);
+      state.selectedLight = id;
+      drag = { kind: "lightmove", id, dx: w.x - l.x, dy: w.y - l.y, moved: false };
+    } else {
+      const l = { id: nextId(), x: w.x, y: w.y, radius: lightDefaults.radius, color: lightDefaults.color };
+      cur().lights.push(l);
+      state.selectedLight = l.id;
+      drag = { kind: "lightmove", id: l.id, dx: 0, dy: 0, moved: false };
+      save();
+    }
+    updateLightUI(); renderLights();
   }
   function previewSVG(tool, x0, y0, x1, y1) {
     const fill = 'fill="rgba(127,208,255,0.12)"';
@@ -1647,6 +1770,27 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     applyView(); save();
   }
 
+  // New-map dialog (choose what, if anything, to copy from the current map)
+  const newmapModal = $("#newmap-modal");
+  const cpIds = ["cp-background", "cp-players", "cp-enemies", "cp-walls", "cp-overlays", "cp-lights"];
+  function openNewMapDialog() { cpIds.forEach(id => { $("#" + id).checked = false; }); newmapModal.hidden = false; }
+  function closeNewMapDialog() { newmapModal.hidden = true; }
+  $("#newmap-close").onclick = closeNewMapDialog;
+  newmapModal.onclick = e => { if (e.target === newmapModal) closeNewMapDialog(); };
+  $("#newmap-none").onclick = () => { closeNewMapDialog(); createMap({}); };
+  $("#newmap-create").onclick = () => {
+    const opts = {
+      background: $("#cp-background").checked,
+      players: $("#cp-players").checked,
+      enemies: $("#cp-enemies").checked,
+      walls: $("#cp-walls").checked,
+      overlays: $("#cp-overlays").checked,
+      lights: $("#cp-lights").checked,
+    };
+    closeNewMapDialog();
+    createMap(opts);
+  };
+
   // Objects panel
   $("#toggle-objects").onclick = () => { objectsPanel.hidden = !objectsPanel.hidden; renderObjects(); };
   $("#objects-close").onclick = () => { objectsPanel.hidden = true; };
@@ -1682,11 +1826,33 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   $("#light-toggle").onchange = () => {
     state.lighting = $("#light-toggle").checked ? "light" : "dark";
     applyLighting();
-    renderVision(); renderTokens(); save();
+    renderVision(); renderLights(); renderTokens(); save();
   };
   $("#draw-walls-btn").onclick = () => setDrawMode(!state.drawMode);
   $("#draw-done").onclick = () => setDrawMode(false);
   drawBar.querySelectorAll(".draw-tool").forEach(b => { b.onclick = () => setDrawTool(b.dataset.tool); });
+
+  // Lights editor
+  $("#draw-lights-btn").onclick = () => setLightMode(!state.lightMode);
+  $("#light-done").onclick = () => setLightMode(false);
+  $("#light-radius").oninput = () => {
+    const v = parseInt($("#light-radius").value, 10) || 10;
+    $("#light-radius-val").textContent = v + " ft";
+    const l = selectedLightObj();
+    if (l) { l.radius = v; lightChanged(); } else { lightDefaults.radius = v; }
+  };
+  $("#light-color").oninput = () => {
+    const c = $("#light-color").value;
+    const l = selectedLightObj();
+    if (l) { l.color = c; lightChanged(); } else { lightDefaults.color = c; }
+  };
+  $("#light-delete").onclick = () => {
+    const l = selectedLightObj();
+    if (!l) return;
+    cur().lights = cur().lights.filter(x => x.id !== l.id);
+    state.selectedLight = null;
+    updateLightUI(); renderLights(); renderVision(); renderTokens(); save();
+  };
   $("#wall-undo").onclick = undo;
   $("#wall-redo").onclick = redo;
   $("#wall-rot").oninput = () => {
@@ -1694,7 +1860,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     if (!w) return;
     if (!$("#wall-rot").dataset.snapped) { snapshot(); $("#wall-rot").dataset.snapped = "1"; }
     rotateWall(w, parseFloat($("#wall-rot").value));
-    renderWalls(); renderVision(); save();
+    renderWalls(); renderVision(); renderLights(); save();
   };
   $("#wall-rot").onchange = () => { delete $("#wall-rot").dataset.snapped; };
   $("#wall-delete").onclick = () => {
@@ -1703,7 +1869,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     snapshot();
     cur().walls = cur().walls.filter(x => x.id !== w.id);
     state.selectedWall = null;
-    updateWallEditUI(); renderWalls(); renderVision(); save();
+    updateWallEditUI(); renderWalls(); renderVision(); renderLights(); save();
   };
   $("#amt-dec").onclick = () => { const i = $("#es-amount"); i.value = Math.max(1, (parseInt(i.value, 10) || 1) - 1); renderSidebar(); };
   $("#amt-inc").onclick = () => { const i = $("#es-amount"); i.value = (parseInt(i.value, 10) || 1) + 1; renderSidebar(); };
@@ -1719,7 +1885,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     reader.onload = async () => {
       try {
         adopt(JSON.parse(reader.result));
-        setDrawMode(false);
+        setDrawMode(false); setLightMode(false);
         $("#vision-toggle").classList.toggle("active", state.visionShow);
         applyLighting();
         applyPanels(); applyToolbar(); syncGridInputs(); renderTabs(); renderAll();
@@ -1764,6 +1930,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
 
   // Keyboard
   window.addEventListener("keydown", e => {
+    if (!newmapModal.hidden) { if (e.key === "Escape") closeNewMapDialog(); return; }
     if (e.target.matches("input, textarea, select")) return;
     const z = (e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z");
     const y = (e.ctrlKey || e.metaKey) && (e.key === "y" || e.key === "Y");
@@ -1775,7 +1942,11 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     if (state.drawMode && (e.key === "Delete" || e.key === "Backspace") && state.selectedWall) {
       e.preventDefault(); $("#wall-delete").click(); return;
     }
+    if (state.lightMode && (e.key === "Delete" || e.key === "Backspace") && state.selectedLight) {
+      e.preventDefault(); $("#light-delete").click(); return;
+    }
     if (e.key === "Escape" && state.drawMode) { setDrawMode(false); return; }
+    if (e.key === "Escape" && state.lightMode) { setLightMode(false); return; }
     if ((e.key === "Delete" || e.key === "Backspace") && cur().selected) { e.preventDefault(); $("#ed-delete").click(); }
     else if (e.key === "Escape") { deselect(); closeEnemyMenu(); }
     else if (e.key === "ArrowRight") { e.preventDefault(); cycleEnemy(1); }
