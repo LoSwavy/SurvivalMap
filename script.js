@@ -192,6 +192,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   const visionLayer = $("#vision-layer");
   const shapeLayer  = $("#shape-layer");
   const wallLayer   = $("#wall-layer");
+  const fogLayer    = $("#fog-layer");
   const tokenLayer  = $("#token-layer");
   const drawBar     = $("#draw-bar");
   const boardHint   = $("#board-hint");
@@ -434,6 +435,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       }
       tokenLayer.appendChild(el);
     }
+    renderFog(dark ? { segs, polys: pPolys } : null);
   }
 
   function isSelected(kind, id) {
@@ -587,6 +589,28 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     }
     if (drawPreview) svg += drawPreview;
     wallLayer.innerHTML = svg;
+  }
+
+  // Dark-mode fog of war: black out everything except inside player vision
+  function renderFog(ctx) {
+    const m = cur();
+    fogLayer.setAttribute("width", m.worldW);
+    fogLayer.setAttribute("height", m.worldH);
+    if (state.lighting !== "dark" || state.drawMode) { fogLayer.innerHTML = ""; return; }
+    const segs = (ctx && ctx.segs) || mapSegments(m);
+    const polys = (ctx && ctx.polys) || playerVisionPolys(m, segs);
+    const holes = polys.map(poly =>
+      `<polygon points="${poly.map(p => p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ")}" fill="#000"/>`
+    ).join("");
+    fogLayer.innerHTML =
+      `<defs>
+        <filter id="fogfeather" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="6"/></filter>
+        <mask id="fogmask">
+          <rect width="${m.worldW}" height="${m.worldH}" fill="#fff"/>
+          <g filter="url(#fogfeather)">${holes}</g>
+        </mask>
+      </defs>
+      <rect width="${m.worldW}" height="${m.worldH}" fill="#02030a" fill-opacity="0.985" mask="url(#fogmask)"/>`;
   }
 
   /* ---------------------------------------------------------
