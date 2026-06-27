@@ -138,11 +138,6 @@ button, input, select, textarea { font-family: inherit; color: inherit; }
 .ls-knob { position: absolute; top: 1px; left: 1px; width: 16px; height: 16px; border-radius: 50%; background: var(--blue-cold); transition: left 0.15s ease, background 0.15s ease; pointer-events: none; }
 .ls-track input:checked + .ls-knob { left: 19px; background: var(--green); }
 
-/* subtle ambiance when the scene is dark */
-.board.dark-scene::after {
-  content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 1;
-  background: radial-gradient(120% 120% at 50% 50%, transparent 55%, rgba(0,0,0,0.45));
-}
 
 .color-swatch {
   -webkit-appearance: none; appearance: none;
@@ -208,7 +203,7 @@ button, input, select, textarea { font-family: inherit; color: inherit; }
   -webkit-user-drag: none; -khtml-user-drag: none; -moz-user-drag: none; -o-user-drag: none;
 }
 .bg-image[hidden] { display: none; }
-.grid-layer, .shape-layer, .vision-layer, .wall-layer {
+.grid-layer, .shape-layer, .vision-layer, .wall-layer, .fog-layer {
   position: absolute; top: 0; left: 0; overflow: visible;
   pointer-events: none;
 }
