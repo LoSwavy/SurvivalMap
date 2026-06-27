@@ -158,7 +158,14 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     enemiesOpen: true,
     editorOpen: false,   // info panel stays closed until you open it
     toolbarOpen: true,
+    visionShow: true,
+    // draw-mode runtime (not persisted)
+    drawMode: false,
+    drawTool: "line",
+    selectedWall: null,
   };
+  const blindPreset = id => id === "clicker" || id === "bloater";
+  const defaultVision = presetId => ({ on: !blindPreset(presetId), range: 30, angle: 90, dir: 0 });
   const nextId = () => "o" + (state.seq++) + "_" + Math.random().toString(36).slice(2, 6);
   const cur = () => state.maps.find(m => m.id === state.activeMapId) || state.maps[0];
 
@@ -181,8 +188,11 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   const world       = $("#world");
   const bgImage     = $("#bg-image");
   const gridLayer   = $("#grid-layer");
+  const visionLayer = $("#vision-layer");
   const shapeLayer  = $("#shape-layer");
+  const wallLayer   = $("#wall-layer");
   const tokenLayer  = $("#token-layer");
+  const drawBar     = $("#draw-bar");
   const boardHint   = $("#board-hint");
   const enemiesPanel = $("#enemies-panel");
   const editorPanel = $("#editor-panel");
@@ -207,7 +217,8 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       try {
         localStorage.setItem(STORE_KEY, JSON.stringify({
           maps: state.maps, activeMapId: state.activeMapId, seq: state.seq,
-          enemiesOpen: state.enemiesOpen, editorOpen: state.editorOpen, toolbarOpen: state.toolbarOpen,
+          enemiesOpen: state.enemiesOpen, editorOpen: state.editorOpen,
+          toolbarOpen: state.toolbarOpen, visionShow: state.visionShow,
         }));
       } catch (e) {
         toast("Couldn't save — map image may be too large for storage.", true);
@@ -219,10 +230,13 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     if (hpMax == null) hpMax = parseInt(p.hp, 10) || 0;
     let hp = (p.hp == null || typeof p.hp === "string") ? (parseInt(p.hp, 10)) : p.hp;
     if (isNaN(hp)) hp = hpMax;
+    const vision = p.vision
+      ? { on: p.vision.on !== false, range: p.vision.range ?? 30, angle: p.vision.angle ?? 90, dir: p.vision.dir ?? 0 }
+      : (p.tag === "enemy" ? defaultVision(p.presetId) : null);
     return {
       id: p.id, tag: p.tag, presetId: p.presetId, name: p.name,
       color: p.color, img: p.img || null,
-      hp, hpMax, hidden: !!p.hidden, x: p.x, y: p.y,
+      hp, hpMax, hidden: !!p.hidden, vision, x: p.x, y: p.y,
     };
   }
   function normMap(m) {
@@ -235,6 +249,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       view: { tx: 60, ty: 60, scale: 1, ...(m.view || {}) },
       pieces: (m.pieces || []).map(normPiece),
       shapes: m.shapes || [],
+      walls: m.walls || [],
       selected: null,
     };
   }
@@ -247,6 +262,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       state.enemiesOpen = d.enemiesOpen !== false;
       state.editorOpen = d.editorOpen === true;
       state.toolbarOpen = d.toolbarOpen !== false;
+      state.visionShow = d.visionShow !== false;
     } else {
       // v1 single-board (or fresh) → wrap into one map
       const m = normMap({
@@ -420,8 +436,221 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   }
 
   function renderAll() {
-    renderBg(); renderGrid(); renderShapes(); renderTokens();
+    renderBg(); renderGrid(); renderVision(); renderShapes(); renderWalls(); renderTokens();
     applyView(); renderObjects(); renderSidebar();
+  }
+
+  /* ---------------------------------------------------------
+     WALLS — geometry. Each wall reduces to line segments that
+     block line of sight. Only shown while in Draw mode.
+     --------------------------------------------------------- */
+  function wallToSegments(w) {
+    if (w.type === "seg") return [[w.x1, w.y1, w.x2, w.y2]];
+    if (w.type === "rect") {
+      const hw = w.w / 2, hh = w.h / 2, a = (w.rot || 0) * Math.PI / 180;
+      const ca = Math.cos(a), sa = Math.sin(a);
+      const corner = (dx, dy) => [w.x + dx * ca - dy * sa, w.y + dx * sa + dy * ca];
+      const c = [corner(-hw, -hh), corner(hw, -hh), corner(hw, hh), corner(-hw, hh)];
+      return [
+        [c[0][0], c[0][1], c[1][0], c[1][1]],
+        [c[1][0], c[1][1], c[2][0], c[2][1]],
+        [c[2][0], c[2][1], c[3][0], c[3][1]],
+        [c[3][0], c[3][1], c[0][0], c[0][1]],
+      ];
+    }
+    if (w.type === "circle") {
+      const segs = [], N = 24;
+      for (let i = 0; i < N; i++) {
+        const a0 = (i / N) * 2 * Math.PI, a1 = ((i + 1) / N) * 2 * Math.PI;
+        segs.push([w.x + Math.cos(a0) * w.r, w.y + Math.sin(a0) * w.r,
+                   w.x + Math.cos(a1) * w.r, w.y + Math.sin(a1) * w.r]);
+      }
+      return segs;
+    }
+    return [];
+  }
+  function mapSegments(m) {
+    const out = [];
+    for (const w of m.walls) for (const s of wallToSegments(w)) out.push(s);
+    return out;
+  }
+
+  // nearest hit distance of a ray (origin px,py, unit dir dx,dy) against segments
+  function rayHit(px, py, dx, dy, maxDist, segs) {
+    let best = maxDist;
+    for (const s of segs) {
+      const x1 = s[0], y1 = s[1], x2 = s[2], y2 = s[3];
+      const ex = x2 - x1, ey = y2 - y1;
+      const denom = dx * ey - dy * ex;
+      if (Math.abs(denom) < 1e-9) continue;
+      const t = ((x1 - px) * ey - (y1 - py) * ex) / denom; // along ray
+      const u = ((x1 - px) * dy - (y1 - py) * dx) / denom; // along segment
+      if (t >= 0 && t <= best && u >= 0 && u <= 1) best = t;
+    }
+    return best;
+  }
+
+  // visibility polygon for an enemy's cone, occluded by walls
+  function visionPolygon(p, segs) {
+    const v = p.vision;
+    const range = feetToPx(v.range);
+    const half = v.angle / 2;
+    const base = v.dir;
+    const offsets = [];
+    const coarse = Math.max(1.5, v.angle / 90); // arc smoothness
+    for (let o = -half; o <= half; o += coarse) offsets.push(o);
+    offsets.push(half);
+    // aim extra rays just past each wall endpoint inside the cone for crisp shadows
+    const norm = a => { a %= 360; if (a > 180) a -= 360; if (a < -180) a += 360; return a; };
+    for (const s of segs) {
+      for (const pt of [[s[0], s[1]], [s[2], s[3]]]) {
+        const d = Math.hypot(pt[0] - p.x, pt[1] - p.y);
+        if (d > range + 2) continue;
+        const off = norm(Math.atan2(pt[1] - p.y, pt[0] - p.x) * 180 / Math.PI - base);
+        if (Math.abs(off) <= half) { offsets.push(off - 0.35, off, off + 0.35); }
+      }
+    }
+    offsets.sort((a, b) => a - b);
+    const pts = [[p.x, p.y]];
+    for (const off of offsets) {
+      if (off < -half - 0.5 || off > half + 0.5) continue;
+      const ang = (base + off) * Math.PI / 180;
+      const dx = Math.cos(ang), dy = Math.sin(ang);
+      const t = rayHit(p.x, p.y, dx, dy, range, segs);
+      pts.push([p.x + dx * t, p.y + dy * t]);
+    }
+    return pts;
+  }
+
+  function renderVision() {
+    const m = cur();
+    visionLayer.setAttribute("width", m.worldW);
+    visionLayer.setAttribute("height", m.worldH);
+    if (!state.visionShow) { visionLayer.innerHTML = ""; return; }
+    const segs = mapSegments(m);
+    let svg = "";
+    for (const p of m.pieces) {
+      if (p.tag !== "enemy" || p.hidden || !p.vision || !p.vision.on) continue;
+      if (p.hpMax > 0 && p.hp <= 0) continue; // the dead don't see
+      const poly = visionPolygon(p, segs);
+      const d = poly.map(pt => `${pt[0].toFixed(1)},${pt[1].toFixed(1)}`).join(" ");
+      svg += `<polygon points="${d}" fill="#f2e27a" fill-opacity="0.13" stroke="#f2e27a" stroke-opacity="0.22" stroke-width="1"/>`;
+    }
+    visionLayer.innerHTML = svg;
+  }
+
+  function renderWalls() {
+    const m = cur();
+    wallLayer.setAttribute("width", m.worldW);
+    wallLayer.setAttribute("height", m.worldH);
+    if (!state.drawMode) { wallLayer.innerHTML = ""; wallLayer.style.pointerEvents = "none"; return; }
+    wallLayer.style.pointerEvents = state.drawTool === "select" ? "auto" : "none";
+    let svg = `<rect width="${m.worldW}" height="${m.worldH}" fill="rgba(20,30,45,0.18)"/>`;
+    for (const w of m.walls) {
+      const sel = state.selectedWall === w.id;
+      const stroke = sel ? "#7fd0ff" : "#bcd2e6";
+      const sw = sel ? 5 : 3.5;
+      for (const s of wallToSegments(w)) {
+        svg += `<line x1="${s[0]}" y1="${s[1]}" x2="${s[2]}" y2="${s[3]}" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round" data-wall-id="${w.id}"/>`;
+      }
+    }
+    if (drawPreview) svg += drawPreview;
+    wallLayer.innerHTML = svg;
+  }
+
+  /* ---------------------------------------------------------
+     DRAW MODE — walls editor (tools, undo/redo, eraser)
+     --------------------------------------------------------- */
+  let drawPreview = "";                 // SVG string for the in-progress shape
+  const histStore = {};                 // mapId -> {past:[], future:[]} (session only)
+  const hist = id => (histStore[id] || (histStore[id] = { past: [], future: [] }));
+  function snapshot() {
+    const m = cur(), h = hist(m.id);
+    h.past.push(JSON.stringify(m.walls));
+    if (h.past.length > 60) h.past.shift();
+    h.future.length = 0;
+    updateUndoRedo();
+  }
+  function undo() {
+    const m = cur(), h = hist(m.id);
+    if (!h.past.length) return;
+    h.future.push(JSON.stringify(m.walls));
+    m.walls = JSON.parse(h.past.pop());
+    state.selectedWall = null;
+    renderWalls(); renderVision(); updateWallEditUI(); updateUndoRedo(); save();
+  }
+  function redo() {
+    const m = cur(), h = hist(m.id);
+    if (!h.future.length) return;
+    h.past.push(JSON.stringify(m.walls));
+    m.walls = JSON.parse(h.future.pop());
+    state.selectedWall = null;
+    renderWalls(); renderVision(); updateWallEditUI(); updateUndoRedo(); save();
+  }
+  function updateUndoRedo() {
+    const h = hist(cur().id);
+    $("#wall-undo").disabled = !h.past.length;
+    $("#wall-redo").disabled = !h.future.length;
+  }
+  function setDrawMode(on) {
+    state.drawMode = on;
+    state.selectedWall = null;
+    drawBar.hidden = !on;
+    board.classList.toggle("draw-mode", on);
+    $("#draw-walls-btn").classList.toggle("active", on);
+    if (on) deselect();
+    updateWallEditUI(); updateUndoRedo();
+    renderWalls(); renderTokens();
+  }
+  function setDrawTool(tool) {
+    state.drawTool = tool;
+    state.selectedWall = null;
+    drawBar.querySelectorAll(".draw-tool").forEach(b => b.classList.toggle("active", b.dataset.tool === tool));
+    updateWallEditUI();
+    renderWalls();
+  }
+  function selectedWallObj() { return cur().walls.find(w => w.id === state.selectedWall) || null; }
+  function updateWallEditUI() {
+    const w = selectedWallObj();
+    const canRotate = w && (w.type === "rect" || w.type === "seg");
+    $("#wall-rot-wrap").hidden = !canRotate;
+    $("#wall-delete").hidden = !w;
+    if (canRotate) $("#wall-rot").value = wallRotation(w);
+  }
+  function wallRotation(w) {
+    if (w.type === "rect") return w.rot || 0;
+    if (w.type === "seg") { let a = Math.atan2(w.y2 - w.y1, w.x2 - w.x1) * 180 / Math.PI; return ((a % 360) + 360) % 360; }
+    return 0;
+  }
+  function rotateWall(w, deg) {
+    if (w.type === "rect") { w.rot = deg; }
+    else if (w.type === "seg") {
+      const cx = (w.x1 + w.x2) / 2, cy = (w.y1 + w.y2) / 2;
+      const len = Math.hypot(w.x2 - w.x1, w.y2 - w.y1) / 2;
+      const a = deg * Math.PI / 180, ca = Math.cos(a) * len, sa = Math.sin(a) * len;
+      w.x1 = cx - ca; w.y1 = cy - sa; w.x2 = cx + ca; w.y2 = cy + sa;
+    }
+  }
+  function eraseAt(wx, wy) {
+    const m = cur(), tol = Math.max(8, m.grid.size * 0.25);
+    const before = m.walls.length;
+    m.walls = m.walls.filter(w => !wallToSegments(w).some(s => pointSegDist(wx, wy, s) <= tol));
+    return m.walls.length !== before;
+  }
+  function pointSegDist(px, py, s) {
+    const x1 = s[0], y1 = s[1], x2 = s[2], y2 = s[3];
+    const dx = x2 - x1, dy = y2 - y1, L2 = dx * dx + dy * dy;
+    let t = L2 ? ((px - x1) * dx + (py - y1) * dy) / L2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+  }
+  function wallHitAt(wx, wy) {
+    const tol = 10;
+    for (let i = cur().walls.length - 1; i >= 0; i--) {
+      const w = cur().walls[i];
+      if (wallToSegments(w).some(s => pointSegDist(wx, wy, s) <= tol)) return w;
+    }
+    return null;
   }
 
   /* ---------------------------------------------------------
@@ -444,6 +673,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       name: preset.name + (same ? " " + (same + 1) : ""),
       color: preset.color, img: null,
       hp: hpMax, hpMax, hidden: false,
+      vision: tag === "enemy" ? defaultVision(presetId) : null,
       x: pos.x, y: pos.y,
     };
     m.pieces.push(piece);
@@ -512,8 +742,9 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       b.textContent = t;
       b.onclick = () => {
         p.tag = t;
-        if (t === "player") p.presetId = "player";
+        if (t === "player") { p.presetId = "player"; p.vision = null; }
         else if (p.presetId === "player") p.presetId = "custom";
+        if (t === "enemy" && !p.vision) p.vision = defaultVision(p.presetId);
         const np = findPreset(p.presetId);
         if (np && np.color) p.color = np.color;
         renderAll(); save(); openEditor();
@@ -541,6 +772,8 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
           const hpMax = hpFromStats(pr.stats);
           p.hpMax = hpMax; p.hp = hpMax;
           if (pr.id !== "custom") p.name = pr.name;
+          if (!p.vision) p.vision = defaultVision(pr.id);
+          p.vision.on = !blindPreset(pr.id); // blind presets (clicker/bloater) default to no cone
           renderAll(); save(); openEditor();
         };
         grid.appendChild(chip);
@@ -571,7 +804,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     const visBtn = document.createElement("button");
     visBtn.className = "toggle-btn" + (p.hidden ? "" : " active");
     visBtn.textContent = p.hidden ? "Hidden" : "Shown";
-    visBtn.onclick = () => { p.hidden = !p.hidden; renderTokens(); renderSidebar(); save(); openEditor(); };
+    visBtn.onclick = () => { p.hidden = !p.hidden; renderTokens(); renderVision(); renderSidebar(); save(); openEditor(); };
     visF.appendChild(visBtn);
     row.appendChild(visF);
     edBody.appendChild(row);
@@ -580,14 +813,35 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     const hpRow = document.createElement("div");
     hpRow.className = "field-row";
     const hpF = field("HP (current)");
-    const hpI = numInput(p.hp, v => { p.hp = v; renderTokens(); renderSidebar(); save(); });
+    const hpI = numInput(p.hp, v => { p.hp = v; renderTokens(); renderVision(); renderSidebar(); save(); });
     hpF.appendChild(hpI);
     hpRow.appendChild(hpF);
     const maxF = field("HP (max)");
-    const maxI = numInput(p.hpMax, v => { p.hpMax = v; if (p.hp > v) p.hp = v; renderTokens(); renderSidebar(); save(); });
+    const maxI = numInput(p.hpMax, v => { p.hpMax = v; if (p.hp > v) p.hp = v; renderTokens(); renderVision(); renderSidebar(); save(); });
     maxF.appendChild(maxI);
     hpRow.appendChild(maxF);
     edBody.appendChild(hpRow);
+
+    // Vision cone (enemies)
+    if (p.tag === "enemy") {
+      if (!p.vision) p.vision = defaultVision(p.presetId);
+      const visF = field("Line of Sight");
+      const onBtn = document.createElement("button");
+      onBtn.className = "toggle-btn" + (p.vision.on ? " active" : "");
+      onBtn.textContent = p.vision.on ? "Vision On" : "Vision Off (disabled)";
+      onBtn.onclick = () => { p.vision.on = !p.vision.on; renderVision(); save(); openEditor(); };
+      visF.appendChild(onBtn);
+      edBody.appendChild(visF);
+      if (p.vision.on) {
+        edBody.appendChild(rangeField("Sight range (ft)", p.vision.range, 5, 120, 5, v => { p.vision.range = v; renderVision(); save(); }));
+        edBody.appendChild(rangeField("Field of view (°)", p.vision.angle, 10, 360, 5, v => { p.vision.angle = v; renderVision(); save(); }));
+        edBody.appendChild(rangeField("Facing (°)", Math.round(((p.vision.dir % 360) + 360) % 360), 0, 355, 5, v => { p.vision.dir = v; renderVision(); save(); }));
+        const hint = document.createElement("p");
+        hint.style.cssText = "font-size:0.7rem;color:var(--text-faint);text-transform:none;margin-top:-4px;";
+        hint.textContent = "Tip: right-click + drag an enemy to aim its cone. Cones are blocked by walls (Draw Walls).";
+        edBody.appendChild(hint);
+      }
+    }
 
     // Image
     const imgF = field("Token Image");
@@ -742,9 +996,9 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
 
       const ctr = document.createElement("div");
       ctr.className = "er-controls";
-      ctr.appendChild(rowBtn("dmg", "−" + amount(), () => { p.hp = clamp(p.hp - amount(), 0, p.hpMax || 9999); renderTokens(); renderSidebar(); save(); }));
-      ctr.appendChild(rowBtn("heal", "+" + amount(), () => { p.hp = clamp(p.hp + amount(), 0, p.hpMax || 9999); renderTokens(); renderSidebar(); save(); }));
-      ctr.appendChild(rowBtn("eye" + (p.hidden ? " off" : ""), p.hidden ? "Show" : "Hide", () => { p.hidden = !p.hidden; renderTokens(); renderSidebar(); save(); if (getSelectedObj() === p) openEditor(); }));
+      ctr.appendChild(rowBtn("dmg", "−" + amount(), () => { p.hp = clamp(p.hp - amount(), 0, p.hpMax || 9999); renderTokens(); renderVision(); renderSidebar(); save(); }));
+      ctr.appendChild(rowBtn("heal", "+" + amount(), () => { p.hp = clamp(p.hp + amount(), 0, p.hpMax || 9999); renderTokens(); renderVision(); renderSidebar(); save(); }));
+      ctr.appendChild(rowBtn("eye" + (p.hidden ? " off" : ""), p.hidden ? "Show" : "Hide", () => { p.hidden = !p.hidden; renderTokens(); renderVision(); renderSidebar(); save(); if (getSelectedObj() === p) openEditor(); }));
       row.appendChild(ctr);
 
       enemyList.appendChild(row);
@@ -879,6 +1133,21 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       pinch = { dist: dist(pts[0], pts[1]), scale: cur().view.scale, cx: (pts[0].x + pts[1].x) / 2, cy: (pts[0].y + pts[1].y) / 2 };
       return;
     }
+    if (state.drawMode) { startDraw(e); return; }
+    // right-click on an enemy → aim/rotate its vision cone by moving the mouse
+    if (e.button === 2) {
+      const t = e.target.closest(".token");
+      const p = t && cur().pieces.find(o => o.id === t.dataset.pieceId);
+      if (p && p.tag === "enemy" && p.vision) {
+        drag = { kind: "cone", id: p.id };
+        if (!p.vision.on) { p.vision.on = true; renderVision(); }
+        aimCone(p, e.clientX, e.clientY);
+        return;
+      }
+      drag = { kind: "pan", startTx: cur().view.tx, startTy: cur().view.ty, startX: e.clientX, startY: e.clientY, moved: false };
+      board.classList.add("panning");
+      return;
+    }
     const tokenEl = e.target.closest(".token");
     const shapeEl = e.target.closest("[data-shape-id]");
     if (tokenEl) {
@@ -916,7 +1185,32 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       applyView();
       return;
     }
+    if (drag.kind === "cone") {
+      const p = cur().pieces.find(o => o.id === drag.id);
+      if (p) aimCone(p, e.clientX, e.clientY);
+      return;
+    }
     const w = screenToWorld(e.clientX, e.clientY);
+    if (drag.kind === "erase") {
+      if (eraseAt(w.x, w.y)) { renderWalls(); renderVision(); }
+      return;
+    }
+    if (drag.kind === "create") {
+      drag.x1 = w.x; drag.y1 = w.y;
+      drawPreview = previewSVG(drag.tool, drag.x0, drag.y0, w.x, w.y);
+      renderWalls();
+      return;
+    }
+    if (drag.kind === "wallmove") {
+      const wl = cur().walls.find(x => x.id === drag.id);
+      if (!wl) return;
+      if (!drag.snapped) { snapshot(); drag.snapped = true; }
+      const dx = w.x - drag.startWX, dy = w.y - drag.startWY;
+      drag.startWX = w.x; drag.startWY = w.y; drag.moved = true;
+      moveWall(wl, dx, dy);
+      renderWalls(); renderVision();
+      return;
+    }
     if (Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) > 3) drag.moved = true;
     if (drag.kind === "piece") {
       const p = cur().pieces.find(o => o.id === drag.id);
@@ -939,12 +1233,22 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     tokenLayer.querySelectorAll(".dragging").forEach(n => n.classList.remove("dragging"));
     if (!drag) return;
     const d = drag; drag = null;
-    if (d.kind === "pan") { if (!d.moved) deselect(); else save(); return; }
+    if (d.kind === "cone") { renderVision(); save(); return; }
+    if (d.kind === "erase") { renderVision(); save(); return; }
+    if (d.kind === "wallmove") { if (d.moved) { renderVision(); save(); } updateWallEditUI(); return; }
+    if (d.kind === "create") {
+      drawPreview = "";
+      const wall = commitWall(d);
+      if (wall) { snapshot(); cur().walls.push(wall); state.selectedWall = null; }
+      renderWalls(); renderVision(); updateWallEditUI(); save();
+      return;
+    }
+    if (d.kind === "pan") { if (!d.moved && !state.drawMode) deselect(); else save(); return; }
     if (d.kind === "piece") {
       const p = cur().pieces.find(o => o.id === d.id);
       if (p) {
         if (!d.moved) select("piece", p.id);
-        else { const sp = snapPoint(p.x, p.y); p.x = sp.x; p.y = sp.y; renderTokens(); save(); }
+        else { const sp = snapPoint(p.x, p.y); p.x = sp.x; p.y = sp.y; renderTokens(); renderVision(); save(); }
       }
     } else if (d.kind === "shape") {
       const s = cur().shapes.find(o => o.id === d.id);
@@ -968,6 +1272,67 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     e.preventDefault();
     zoomAround(e.clientX, e.clientY, clampScale(cur().view.scale * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
   }, { passive: false });
+  board.addEventListener("contextmenu", e => e.preventDefault()); // free up right-drag for cone aim
+
+  /* ---- vision aim + draw helpers ---- */
+  let visionRAF = 0;
+  function renderVisionThrottled() {
+    if (visionRAF) return;
+    visionRAF = requestAnimationFrame(() => { visionRAF = 0; renderVision(); });
+  }
+  function aimCone(p, cx, cy) {
+    const w = screenToWorld(cx, cy);
+    p.vision.dir = Math.atan2(w.y - p.y, w.x - p.x) * 180 / Math.PI;
+    renderVisionThrottled();
+  }
+  function startDraw(e) {
+    const w = screenToWorld(e.clientX, e.clientY);
+    if (e.button === 2 || e.button === 1) { // pan inside draw mode
+      drag = { kind: "pan", startTx: cur().view.tx, startTy: cur().view.ty, startX: e.clientX, startY: e.clientY, moved: false };
+      board.classList.add("panning");
+      return;
+    }
+    const tool = state.drawTool;
+    if (tool === "eraser") {
+      drag = { kind: "erase" };
+      snapshot();
+      if (eraseAt(w.x, w.y)) { renderWalls(); renderVision(); }
+      return;
+    }
+    if (tool === "select") {
+      const hitEl = e.target.closest("[data-wall-id]");
+      const wl = hitEl ? cur().walls.find(x => x.id === hitEl.dataset.wallId) : wallHitAt(w.x, w.y);
+      if (wl) {
+        state.selectedWall = wl.id;
+        drag = { kind: "wallmove", id: wl.id, startWX: w.x, startWY: w.y, moved: false, snapped: false };
+      } else {
+        state.selectedWall = null;
+        drag = { kind: "pan", startTx: cur().view.tx, startTy: cur().view.ty, startX: e.clientX, startY: e.clientY, moved: false };
+        board.classList.add("panning");
+      }
+      updateWallEditUI(); renderWalls();
+      return;
+    }
+    drag = { kind: "create", tool, x0: w.x, y0: w.y, x1: w.x, y1: w.y };
+  }
+  function previewSVG(tool, x0, y0, x1, y1) {
+    const fill = 'fill="rgba(127,208,255,0.12)"';
+    if (tool === "line") return `<line x1="${x0}" y1="${y0}" x2="${x1}" y2="${y1}" stroke="#7fd0ff" stroke-width="3.5" stroke-linecap="round"/>`;
+    if (tool === "rect") { const x = Math.min(x0, x1), y = Math.min(y0, y1), w = Math.abs(x1 - x0), h = Math.abs(y1 - y0); return `<rect x="${x}" y="${y}" width="${w}" height="${h}" ${fill} stroke="#7fd0ff" stroke-width="3.5"/>`; }
+    if (tool === "circle") { const r = Math.hypot(x1 - x0, y1 - y0); return `<circle cx="${x0}" cy="${y0}" r="${r}" ${fill} stroke="#7fd0ff" stroke-width="3.5"/>`; }
+    return "";
+  }
+  function commitWall(d) {
+    const x0 = d.x0, y0 = d.y0, x1 = d.x1, y1 = d.y1;
+    if (d.tool === "line") { if (Math.hypot(x1 - x0, y1 - y0) < 6) return null; return { id: nextId(), type: "seg", x1: x0, y1: y0, x2: x1, y2: y1 }; }
+    if (d.tool === "rect") { const w = Math.abs(x1 - x0), h = Math.abs(y1 - y0); if (w < 6 || h < 6) return null; return { id: nextId(), type: "rect", x: (x0 + x1) / 2, y: (y0 + y1) / 2, w, h, rot: 0 }; }
+    if (d.tool === "circle") { const r = Math.hypot(x1 - x0, y1 - y0); if (r < 6) return null; return { id: nextId(), type: "circle", x: x0, y: y0, r }; }
+    return null;
+  }
+  function moveWall(w, dx, dy) {
+    if (w.type === "seg") { w.x1 += dx; w.y1 += dy; w.x2 += dx; w.y2 += dy; }
+    else { w.x += dx; w.y += dy; }
+  }
 
   /* ---------------------------------------------------------
      FILE UPLOADS
@@ -1106,6 +1471,34 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   // Toolbar collapse
   $("#tb-collapse").onclick = () => setToolbar(false);
   toolbarReopen.onclick = () => setToolbar(true);
+
+  // Sight: vision cones + wall draw mode
+  $("#vision-toggle").onclick = () => {
+    state.visionShow = !state.visionShow;
+    $("#vision-toggle").classList.toggle("active", state.visionShow);
+    renderVision(); save();
+  };
+  $("#draw-walls-btn").onclick = () => setDrawMode(!state.drawMode);
+  $("#draw-done").onclick = () => setDrawMode(false);
+  drawBar.querySelectorAll(".draw-tool").forEach(b => { b.onclick = () => setDrawTool(b.dataset.tool); });
+  $("#wall-undo").onclick = undo;
+  $("#wall-redo").onclick = redo;
+  $("#wall-rot").oninput = () => {
+    const w = selectedWallObj();
+    if (!w) return;
+    if (!$("#wall-rot").dataset.snapped) { snapshot(); $("#wall-rot").dataset.snapped = "1"; }
+    rotateWall(w, parseFloat($("#wall-rot").value));
+    renderWalls(); renderVision(); save();
+  };
+  $("#wall-rot").onchange = () => { delete $("#wall-rot").dataset.snapped; };
+  $("#wall-delete").onclick = () => {
+    const w = selectedWallObj();
+    if (!w) return;
+    snapshot();
+    cur().walls = cur().walls.filter(x => x.id !== w.id);
+    state.selectedWall = null;
+    updateWallEditUI(); renderWalls(); renderVision(); save();
+  };
   $("#amt-dec").onclick = () => { const i = $("#es-amount"); i.value = Math.max(1, (parseInt(i.value, 10) || 1) - 1); renderSidebar(); };
   $("#amt-inc").onclick = () => { const i = $("#es-amount"); i.value = (parseInt(i.value, 10) || 1) + 1; renderSidebar(); };
   $("#es-amount").oninput = renderSidebar;
@@ -1120,6 +1513,8 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     reader.onload = () => {
       try {
         adopt(JSON.parse(reader.result));
+        setDrawMode(false);
+        $("#vision-toggle").classList.toggle("active", state.visionShow);
         applyPanels(); applyToolbar(); syncGridInputs(); renderTabs(); renderAll(); save();
         toast("Map imported.");
       } catch (err) { toast("Import failed — invalid file.", true); }
@@ -1149,6 +1544,17 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   // Keyboard
   window.addEventListener("keydown", e => {
     if (e.target.matches("input, textarea, select")) return;
+    const z = (e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z");
+    const y = (e.ctrlKey || e.metaKey) && (e.key === "y" || e.key === "Y");
+    if (state.drawMode && (z || y)) {
+      e.preventDefault();
+      if (y || (z && e.shiftKey)) redo(); else undo();
+      return;
+    }
+    if (state.drawMode && (e.key === "Delete" || e.key === "Backspace") && state.selectedWall) {
+      e.preventDefault(); $("#wall-delete").click(); return;
+    }
+    if (e.key === "Escape" && state.drawMode) { setDrawMode(false); return; }
     if ((e.key === "Delete" || e.key === "Backspace") && cur().selected) { e.preventDefault(); $("#ed-delete").click(); }
     else if (e.key === "Escape") { deselect(); closeEnemyMenu(); }
     else if (e.key === "ArrowRight") { e.preventDefault(); cycleEnemy(1); }
@@ -1191,7 +1597,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     const p = m.pieces.find(o => o.id === m.selected.id);
     if (!p || p.tag !== "enemy") return;
     p.hidden = !p.hidden;
-    renderTokens(); renderSidebar(); save(); openEditor();
+    renderTokens(); renderVision(); renderSidebar(); save(); openEditor();
     if (p.hidden) pulseAt(p); // it just vanished — flash where it went
   }
   function pulseAt(p) {
@@ -1225,6 +1631,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   if (!cur()) state.activeMapId = state.maps[0].id;
   applyPanels();
   applyToolbar();
+  $("#vision-toggle").classList.toggle("active", state.visionShow);
   renderTabs();
   syncGridInputs();
   renderAll();
