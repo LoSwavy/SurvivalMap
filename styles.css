@@ -361,6 +361,34 @@ button, input, select, textarea { font-family: inherit; color: inherit; }
 .modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 16px; border-top: 1px solid var(--line-soft); }
 .check { display: flex; align-items: center; gap: 9px; font-size: 0.86rem; color: var(--text); cursor: pointer; text-transform: none; }
 .check input { width: 17px; height: 17px; accent-color: var(--green-deep); cursor: pointer; }
+.dialog-input {
+  -webkit-appearance: none; appearance: none;
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius-sm);
+  color: var(--text); padding: 10px 11px; font-size: 0.9rem;
+}
+.dialog-input:focus { outline: none; border-color: var(--green-deep); box-shadow: 0 0 0 2px var(--green-glow); }
+.dialog-input[hidden] { display: none; }
+
+/* ====================== CUSTOM SLIDERS ====================== */
+input[type=range] {
+  -webkit-appearance: none; appearance: none;
+  height: 22px; background: transparent; cursor: pointer; padding: 0; margin: 0;
+}
+input[type=range]::-webkit-slider-runnable-track {
+  height: 6px; border-radius: 5px; background: var(--bg-2); border: 1px solid var(--line);
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 16px; height: 16px; margin-top: -6px; border-radius: 50%;
+  background: var(--green); border: 2px solid #14160c; box-shadow: 0 1px 3px rgba(0,0,0,0.5);
+}
+input[type=range]:hover::-webkit-slider-thumb { background: #c3d68a; }
+input[type=range]:active::-webkit-slider-thumb { background: var(--green); transform: scale(1.1); }
+input[type=range]::-moz-range-track { height: 6px; border-radius: 5px; background: var(--bg-2); border: 1px solid var(--line); }
+input[type=range]::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: var(--green); border: 2px solid #14160c; box-shadow: 0 1px 3px rgba(0,0,0,0.5); }
+input[type=range]:focus { outline: none; }
+input[type=range]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px var(--green-glow); }
+input[type=range]:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 3px var(--green-glow); }
 
 /* ====================== TOAST ====================== */
 .toast {
