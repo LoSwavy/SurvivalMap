@@ -159,6 +159,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     editorOpen: false,   // info panel stays closed until you open it
     toolbarOpen: true,
     visionShow: true,
+    lighting: "light",   // "light" | "dark" (dark hides enemies outside player LOS)
     // draw-mode runtime (not persisted)
     drawMode: false,
     drawTool: "line",
@@ -218,7 +219,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
         localStorage.setItem(STORE_KEY, JSON.stringify({
           maps: state.maps, activeMapId: state.activeMapId, seq: state.seq,
           enemiesOpen: state.enemiesOpen, editorOpen: state.editorOpen,
-          toolbarOpen: state.toolbarOpen, visionShow: state.visionShow,
+          toolbarOpen: state.toolbarOpen, visionShow: state.visionShow, lighting: state.lighting,
         }));
       } catch (e) {
         toast("Couldn't save — map image may be too large for storage.", true);
@@ -232,7 +233,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     if (isNaN(hp)) hp = hpMax;
     const vision = p.vision
       ? { on: p.vision.on !== false, range: p.vision.range ?? 30, angle: p.vision.angle ?? 90, dir: p.vision.dir ?? 0 }
-      : (p.tag === "enemy" ? defaultVision(p.presetId) : null);
+      : defaultVision(p.presetId); // both players and enemies get a cone
     return {
       id: p.id, tag: p.tag, presetId: p.presetId, name: p.name,
       color: p.color, img: p.img || null,
@@ -263,6 +264,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       state.editorOpen = d.editorOpen === true;
       state.toolbarOpen = d.toolbarOpen !== false;
       state.visionShow = d.visionShow !== false;
+      state.lighting = d.lighting === "dark" ? "dark" : "light";
     } else {
       // v1 single-board (or fresh) → wrap into one map
       const m = normMap({
@@ -397,8 +399,12 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     const m = cur();
     tokenLayer.querySelectorAll(".token").forEach(n => n.remove());
     const size = Math.max(20, m.grid.size);
+    const dark = state.lighting === "dark";
+    const segs = dark ? mapSegments(m) : null;
+    const pPolys = dark ? playerVisionPolys(m, segs) : null;
     for (const p of m.pieces) {
       if (p.hidden) continue; // hidden pieces live only in the sidebar
+      if (dark && p.tag === "enemy" && !seenByPlayers(p, pPolys)) continue; // unseen in the dark
       const down = p.hpMax > 0 && p.hp <= 0;
       const el = document.createElement("div");
       el.className = "token " + p.tag + (isSelected("piece", p.id) ? " selected" : "") + (down ? " downed" : "");
@@ -474,6 +480,26 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     for (const w of m.walls) for (const s of wallToSegments(w)) out.push(s);
     return out;
   }
+  function pointInPoly(x, y, poly) {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
+      if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) inside = !inside;
+    }
+    return inside;
+  }
+  const canSee = p => p && p.vision && p.vision.on && !p.hidden && !(p.hpMax > 0 && p.hp <= 0);
+  function playerVisionPolys(m, segs) {
+    return m.pieces.filter(pl => pl.tag === "player" && canSee(pl)).map(pl => visionPolygon(pl, segs));
+  }
+  function seenByPlayers(p, polys) {
+    return polys.some(poly => pointInPoly(p.x, p.y, poly));
+  }
+  // an enemy is concealed by darkness when no player can see it
+  function darkHidden(p, m, segs, polys) {
+    if (state.lighting !== "dark" || p.tag !== "enemy") return false;
+    return !seenByPlayers(p, polys || playerVisionPolys(m, segs || mapSegments(m)));
+  }
 
   // nearest hit distance of a ray (origin px,py, unit dir dx,dy) against segments
   function rayHit(px, py, dx, dy, maxDist, segs) {
@@ -528,13 +554,18 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     visionLayer.setAttribute("height", m.worldH);
     if (!state.visionShow) { visionLayer.innerHTML = ""; return; }
     const segs = mapSegments(m);
+    const pPolys = playerVisionPolys(m, segs);
+    const toPts = poly => poly.map(pt => `${pt[0].toFixed(1)},${pt[1].toFixed(1)}`).join(" ");
     let svg = "";
+    // player line-of-sight (cool light)
+    for (const poly of pPolys) {
+      svg += `<polygon points="${toPts(poly)}" fill="#cfe3ff" fill-opacity="0.16" stroke="#cfe3ff" stroke-opacity="0.28" stroke-width="1"/>`;
+    }
+    // enemy vision (warm yellow) — concealed enemies don't reveal a cone
     for (const p of m.pieces) {
-      if (p.tag !== "enemy" || p.hidden || !p.vision || !p.vision.on) continue;
-      if (p.hpMax > 0 && p.hp <= 0) continue; // the dead don't see
-      const poly = visionPolygon(p, segs);
-      const d = poly.map(pt => `${pt[0].toFixed(1)},${pt[1].toFixed(1)}`).join(" ");
-      svg += `<polygon points="${d}" fill="#f2e27a" fill-opacity="0.13" stroke="#f2e27a" stroke-opacity="0.22" stroke-width="1"/>`;
+      if (p.tag !== "enemy" || !canSee(p)) continue;
+      if (darkHidden(p, m, segs, pPolys)) continue;
+      svg += `<polygon points="${toPts(visionPolygon(p, segs))}" fill="#f2e27a" fill-opacity="0.13" stroke="#f2e27a" stroke-opacity="0.22" stroke-width="1"/>`;
     }
     visionLayer.innerHTML = svg;
   }
@@ -673,7 +704,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       name: preset.name + (same ? " " + (same + 1) : ""),
       color: preset.color, img: null,
       hp: hpMax, hpMax, hidden: false,
-      vision: tag === "enemy" ? defaultVision(presetId) : null,
+      vision: defaultVision(presetId),
       x: pos.x, y: pos.y,
     };
     m.pieces.push(piece);
@@ -742,9 +773,9 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       b.textContent = t;
       b.onclick = () => {
         p.tag = t;
-        if (t === "player") { p.presetId = "player"; p.vision = null; }
+        if (t === "player") p.presetId = "player";
         else if (p.presetId === "player") p.presetId = "custom";
-        if (t === "enemy" && !p.vision) p.vision = defaultVision(p.presetId);
+        if (!p.vision) p.vision = defaultVision(p.presetId);
         const np = findPreset(p.presetId);
         if (np && np.color) p.color = np.color;
         renderAll(); save(); openEditor();
@@ -822,23 +853,25 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     hpRow.appendChild(maxF);
     edBody.appendChild(hpRow);
 
-    // Vision cone (enemies)
-    if (p.tag === "enemy") {
+    // Vision cone (players & enemies)
+    {
       if (!p.vision) p.vision = defaultVision(p.presetId);
       const visF = field("Line of Sight");
       const onBtn = document.createElement("button");
       onBtn.className = "toggle-btn" + (p.vision.on ? " active" : "");
       onBtn.textContent = p.vision.on ? "Vision On" : "Vision Off (disabled)";
-      onBtn.onclick = () => { p.vision.on = !p.vision.on; renderVision(); save(); openEditor(); };
+      onBtn.onclick = () => { p.vision.on = !p.vision.on; renderVision(); renderTokens(); save(); openEditor(); };
       visF.appendChild(onBtn);
       edBody.appendChild(visF);
       if (p.vision.on) {
-        edBody.appendChild(rangeField("Sight range (ft)", p.vision.range, 5, 120, 5, v => { p.vision.range = v; renderVision(); save(); }));
-        edBody.appendChild(rangeField("Field of view (°)", p.vision.angle, 10, 360, 5, v => { p.vision.angle = v; renderVision(); save(); }));
-        edBody.appendChild(rangeField("Facing (°)", Math.round(((p.vision.dir % 360) + 360) % 360), 0, 355, 5, v => { p.vision.dir = v; renderVision(); save(); }));
+        edBody.appendChild(rangeField("Sight range (ft)", p.vision.range, 5, 120, 5, v => { p.vision.range = v; renderVision(); renderTokens(); save(); }));
+        edBody.appendChild(rangeField("Field of view (°)", p.vision.angle, 10, 360, 5, v => { p.vision.angle = v; renderVision(); renderTokens(); save(); }));
+        edBody.appendChild(rangeField("Facing (°)", Math.round(((p.vision.dir % 360) + 360) % 360), 0, 355, 5, v => { p.vision.dir = v; renderVision(); renderTokens(); save(); }));
         const hint = document.createElement("p");
         hint.style.cssText = "font-size:0.7rem;color:var(--text-faint);text-transform:none;margin-top:-4px;";
-        hint.textContent = "Tip: right-click + drag an enemy to aim its cone. Cones are blocked by walls (Draw Walls).";
+        hint.textContent = p.tag === "player"
+          ? "Tip: right-click + drag to aim. In Dark, players' cones reveal enemies they can see."
+          : "Tip: right-click + drag to aim. Cones are blocked by walls (Draw Walls).";
         edBody.appendChild(hint);
       }
     }
@@ -1138,7 +1171,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     if (e.button === 2) {
       const t = e.target.closest(".token");
       const p = t && cur().pieces.find(o => o.id === t.dataset.pieceId);
-      if (p && p.tag === "enemy" && p.vision) {
+      if (p && p.vision) {
         drag = { kind: "cone", id: p.id };
         if (!p.vision.on) { p.vision.on = true; renderVision(); }
         aimCone(p, e.clientX, e.clientY);
@@ -1233,7 +1266,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     tokenLayer.querySelectorAll(".dragging").forEach(n => n.classList.remove("dragging"));
     if (!drag) return;
     const d = drag; drag = null;
-    if (d.kind === "cone") { renderVision(); save(); return; }
+    if (d.kind === "cone") { renderVision(); if (state.lighting === "dark") renderTokens(); save(); return; }
     if (d.kind === "erase") { renderVision(); save(); return; }
     if (d.kind === "wallmove") { if (d.moved) { renderVision(); save(); } updateWallEditUI(); return; }
     if (d.kind === "create") {
@@ -1273,12 +1306,14 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     zoomAround(e.clientX, e.clientY, clampScale(cur().view.scale * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
   }, { passive: false });
   board.addEventListener("contextmenu", e => e.preventDefault()); // free up right-drag for cone aim
+  // never let the browser pick up the map image (or anything) as a draggable file/ghost
+  window.addEventListener("dragstart", e => e.preventDefault());
 
   /* ---- vision aim + draw helpers ---- */
   let visionRAF = 0;
   function renderVisionThrottled() {
     if (visionRAF) return;
-    visionRAF = requestAnimationFrame(() => { visionRAF = 0; renderVision(); });
+    visionRAF = requestAnimationFrame(() => { visionRAF = 0; renderVision(); if (state.lighting === "dark") renderTokens(); });
   }
   function aimCone(p, cx, cy) {
     const w = screenToWorld(cx, cy);
@@ -1478,6 +1513,17 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     $("#vision-toggle").classList.toggle("active", state.visionShow);
     renderVision(); save();
   };
+  function applyLighting() {
+    const light = state.lighting !== "dark";
+    $("#light-toggle").checked = light;
+    $("#light-switch").classList.toggle("is-dark", !light);
+    board.classList.toggle("dark-scene", !light);
+  }
+  $("#light-toggle").onchange = () => {
+    state.lighting = $("#light-toggle").checked ? "light" : "dark";
+    applyLighting();
+    renderVision(); renderTokens(); save();
+  };
   $("#draw-walls-btn").onclick = () => setDrawMode(!state.drawMode);
   $("#draw-done").onclick = () => setDrawMode(false);
   drawBar.querySelectorAll(".draw-tool").forEach(b => { b.onclick = () => setDrawTool(b.dataset.tool); });
@@ -1515,6 +1561,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
         adopt(JSON.parse(reader.result));
         setDrawMode(false);
         $("#vision-toggle").classList.toggle("active", state.visionShow);
+        applyLighting();
         applyPanels(); applyToolbar(); syncGridInputs(); renderTabs(); renderAll(); save();
         toast("Map imported.");
       } catch (err) { toast("Import failed — invalid file.", true); }
@@ -1632,6 +1679,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   applyPanels();
   applyToolbar();
   $("#vision-toggle").classList.toggle("active", state.visionShow);
+  applyLighting();
   renderTabs();
   syncGridInputs();
   renderAll();
