@@ -43,6 +43,15 @@
       </div>
     </div>
 
+    <!-- Sight -->
+    <div class="tb-group">
+      <span class="tb-label">Sight</span>
+      <div class="tb-row">
+        <button class="btn small" id="draw-walls-btn">Draw Walls</button>
+        <button class="toggle-btn active" id="vision-toggle" title="Show / hide vision cones">Vision</button>
+      </div>
+    </div>
+
     <!-- Background -->
     <div class="tb-group">
       <span class="tb-label">Background</span>
@@ -113,7 +122,9 @@
   <div class="world" id="world">
     <img class="bg-image" id="bg-image" alt="" hidden />
     <svg class="grid-layer" id="grid-layer" xmlns="http://www.w3.org/2000/svg"></svg>
+    <svg class="vision-layer" id="vision-layer" xmlns="http://www.w3.org/2000/svg"></svg>
     <svg class="shape-layer" id="shape-layer" xmlns="http://www.w3.org/2000/svg"></svg>
+    <svg class="wall-layer" id="wall-layer" xmlns="http://www.w3.org/2000/svg"></svg>
     <div class="token-layer" id="token-layer"></div>
   </div>
 
@@ -158,6 +169,27 @@
 </aside>
 
 </div><!-- /stage -->
+
+<!-- ===================== DRAW (WALLS) TOOLBAR ===================== -->
+<div class="draw-bar" id="draw-bar" hidden>
+  <span class="draw-title">Walls</span>
+  <div class="draw-tools">
+    <button class="draw-tool" data-tool="select">Select</button>
+    <button class="draw-tool active" data-tool="line">Line</button>
+    <button class="draw-tool" data-tool="rect">Rect</button>
+    <button class="draw-tool" data-tool="circle">Circle</button>
+    <button class="draw-tool" data-tool="eraser">Eraser</button>
+  </div>
+  <span class="draw-sep"></span>
+  <button class="draw-btn" id="wall-undo" title="Undo">↶ Undo</button>
+  <button class="draw-btn" id="wall-redo" title="Redo">↷ Redo</button>
+  <span class="draw-sep"></span>
+  <label class="draw-rot" id="wall-rot-wrap" hidden>Rotate
+    <input type="range" id="wall-rot" min="0" max="350" step="5" value="0" />
+  </label>
+  <button class="draw-btn danger" id="wall-delete" hidden>Delete</button>
+  <button class="btn small accent" id="draw-done">Done</button>
+</div>
 
 <!-- ===================== OBJECTS PANEL ===================== -->
 <aside class="objects-panel" id="objects-panel" hidden>
