@@ -49,6 +49,11 @@
       <div class="tb-row">
         <button class="btn small" id="draw-walls-btn">Draw Walls</button>
         <button class="toggle-btn active" id="vision-toggle" title="Show / hide vision cones">Vision</button>
+        <label class="light-switch" id="light-switch" title="Dark hides enemies outside player line of sight">
+          <span class="ls-end ls-dark">Dark</span>
+          <span class="ls-track"><input type="checkbox" id="light-toggle" checked /><span class="ls-knob"></span></span>
+          <span class="ls-end ls-light">Light</span>
+        </label>
       </div>
     </div>
 
@@ -120,7 +125,7 @@
 <!-- ===================== BOARD ===================== -->
 <div class="board" id="board">
   <div class="world" id="world">
-    <img class="bg-image" id="bg-image" alt="" hidden />
+    <img class="bg-image" id="bg-image" alt="" draggable="false" hidden />
     <svg class="grid-layer" id="grid-layer" xmlns="http://www.w3.org/2000/svg"></svg>
     <svg class="vision-layer" id="vision-layer" xmlns="http://www.w3.org/2000/svg"></svg>
     <svg class="shape-layer" id="shape-layer" xmlns="http://www.w3.org/2000/svg"></svg>
