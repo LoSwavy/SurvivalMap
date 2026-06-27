@@ -258,6 +258,24 @@
   </div>
 </div>
 
+<!-- ===================== GENERIC DIALOG ===================== -->
+<div class="modal-overlay" id="dialog-modal" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="dialog-title">Confirm</h3>
+      <button class="modal-close" id="dialog-x">✕</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-hint" id="dialog-msg"></p>
+      <input type="text" id="dialog-input" class="dialog-input" hidden />
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" id="dialog-cancel">Cancel</button>
+      <button class="btn accent" id="dialog-ok">OK</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast" hidden></div>
 
 <script src="script.js"></script>
