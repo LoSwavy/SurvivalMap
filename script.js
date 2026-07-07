@@ -160,6 +160,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     toolbarOpen: true,
     visionShow: true,
     lighting: "light",   // "light" | "dark" (dark hides enemies outside player LOS)
+    privacy: false,      // scene window shows the PLEASE WAIT cover
     // edit-mode runtime (not persisted)
     drawMode: false,    // walls editor
     drawTool: "line",
@@ -175,7 +176,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   function statePayload() {
     return {
       maps: state.maps, activeMapId: state.activeMapId, seq: state.seq,
-      lighting: state.lighting, visionShow: state.visionShow,
+      lighting: state.lighting, visionShow: state.visionShow, privacy: state.privacy,
       viewport: viewportPayload(),
     };
   }
@@ -256,6 +257,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
           maps: state.maps, activeMapId: state.activeMapId, seq: state.seq,
           enemiesOpen: state.enemiesOpen, editorOpen: state.editorOpen,
           toolbarOpen: state.toolbarOpen, visionShow: state.visionShow, lighting: state.lighting,
+          privacy: state.privacy,
         }));
       } catch (e) {
         toast("Couldn't save settings to local storage.", true);
@@ -302,6 +304,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       state.toolbarOpen = d.toolbarOpen !== false;
       state.visionShow = d.visionShow !== false;
       state.lighting = d.lighting === "dark" ? "dark" : "light";
+      state.privacy = d.privacy === true;
     } else {
       // v1 single-board (or fresh) → wrap into one map
       const m = normMap({
@@ -587,7 +590,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     for (const p of m.pieces) {
       if (p.hidden) continue; // hidden pieces live only in the sidebar
       if (VIEW_MODE && p.tag === "enemy" && !p.revealed) continue; // scene shows only revealed enemies
-      if (dark && p.tag === "enemy" && !seenByPlayers(p, reveal)) continue; // unseen in the dark
+      if (VIEW_MODE && dark && p.tag === "enemy" && !seenByPlayers(p, reveal)) continue; // dark conceals on the scene only
       const down = p.hpMax > 0 && p.hp <= 0;
       const el = document.createElement("div");
       el.className = "token " + p.tag + (isSelected("piece", p.id) ? " selected" : "") + (down ? " downed" : "");
@@ -762,13 +765,11 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       if (p.tag !== "player" || !canSee(p)) continue;
       const poly = visionPolygon({ x: p.x, y: p.y, vision: { range: Math.min(p.vision.range, cap), angle: p.vision.angle, dir: p.vision.dir } }, segs);
       pPolys.push(poly);
-      svg += `<polygon points="${toPts(poly)}" fill="${p.color}" fill-opacity="0.07" stroke="${p.color}" stroke-opacity="0.2" stroke-width="1"/>`;
+      svg += `<polygon points="${toPts(poly)}" fill="${p.color}" fill-opacity="0.15" stroke="${p.color}" stroke-opacity="0.3" stroke-width="1"/>`;
     }
-    const reveal = dark ? pPolys.concat(lightPolys(m, segs)) : null;
-    // enemy vision (warm yellow) — concealed enemies don't reveal a cone
+    // enemy vision (warm yellow) — the GM always sees every cone
     for (const p of m.pieces) {
       if (p.tag !== "enemy" || !canSee(p)) continue;
-      if (dark && !seenByPlayers(p, reveal)) continue;
       svg += `<polygon points="${toPts(visionPolygon(p, segs))}" fill="#f2e27a" fill-opacity="0.13" stroke="#f2e27a" stroke-opacity="0.22" stroke-width="1"/>`;
     }
     visionLayer.innerHTML = svg;
@@ -812,7 +813,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
           <g filter="url(#fogfeather)">${holes}</g>
         </mask>
       </defs>
-      <rect width="${m.worldW}" height="${m.worldH}" fill="#02030a" fill-opacity="0.95" mask="url(#fogmask)"/>`;
+      <rect width="${m.worldW}" height="${m.worldH}" fill="#02030a" fill-opacity="${VIEW_MODE ? 0.95 : 0.4}" mask="url(#fogmask)"/>`;
   }
 
   // Lights: soft warm glow (clipped by walls). Edit handles show in lights mode.
@@ -1366,6 +1367,18 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     add.title = "New blank map (e.g. the next floor)";
     add.onclick = addMap;
     tabStrip.appendChild(add);
+
+    // far right: cover/uncover the View Scene while you fiddle in secret
+    const pw = document.createElement("button");
+    pw.className = "tab-privacy" + (state.privacy ? " active" : "");
+    pw.textContent = state.privacy ? "🚨 SCENE HIDDEN 🚨" : "🎬 Hide Scene";
+    pw.title = "Cover the View Scene window with a PLEASE WAIT screen while you switch maps or edit";
+    pw.onclick = () => {
+      state.privacy = !state.privacy;
+      renderTabs(); save();
+      toast(state.privacy ? "Scene covered — players see PLEASE WAIT." : "Scene uncovered.");
+    };
+    tabStrip.appendChild(pw);
   }
   function switchMap(id) {
     if (id === state.activeMapId) return;
@@ -2192,13 +2205,17 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       if (document.fullscreenElement) document.exitFullscreen();
       else document.documentElement.requestFullscreen?.();
     });
+    // PLEASE WAIT cover — controlled by the GM; hidden gif falls back to an emoji
+    const privacyScreen = $("#privacy-screen"), pwGif = $("#pw-gif"), pwFallback = $("#pw-fallback");
+    pwGif.onerror = () => { pwGif.hidden = true; pwFallback.hidden = false; };
+    function applyPrivacy() { privacyScreen.hidden = !state.privacy; }
     if (syncChannel) {
       syncChannel.onmessage = ev => {
         const msg = ev.data || {};
         if (msg.type === "view") { applyRemoteView(msg.data); return; }
         if (msg.type !== "state") return;
         adopt(msg.data);
-        applyLighting();
+        applyLighting(); applyPrivacy();
         renderAll();
         applyRemoteView(msg.data.viewport || lastViewport);
       };
@@ -2208,9 +2225,10 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     window.addEventListener("storage", ev => {
       if (ev.key !== STORE_KEY || !ev.newValue) return;
       try { adopt(JSON.parse(ev.newValue)); } catch (e) { return; }
-      applyLighting(); renderAll();
+      applyLighting(); applyPrivacy(); renderAll();
       lastViewport ? applyRemoteView(lastViewport) : fitView();
     });
+    applyPrivacy();
   } else {
     // main window: answer scene windows asking for state
     if (syncChannel) syncChannel.onmessage = ev => { if ((ev.data || {}).type === "hello") broadcastState(); };
