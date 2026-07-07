@@ -167,6 +167,21 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     lightMode: false,   // lights editor
     selectedLight: null,
   };
+  // View Scene: same page opened with ?view=1 becomes a chrome-less,
+  // read-only player display that live-syncs from the main window.
+  const VIEW_MODE = new URLSearchParams(location.search).has("view");
+  let syncChannel = null;
+  try { syncChannel = new BroadcastChannel("fieldmap-sync"); } catch (e) { /* very old browser */ }
+  function statePayload() {
+    return {
+      maps: state.maps, activeMapId: state.activeMapId, seq: state.seq,
+      lighting: state.lighting, visionShow: state.visionShow,
+    };
+  }
+  function broadcastState() {
+    if (syncChannel && !VIEW_MODE) syncChannel.postMessage({ type: "state", data: statePayload() });
+  }
+
   const blindPreset = id => id === "clicker" || id === "bloater";
   const PLAYER_DARK_RANGE = 60; // players see only 60 ft in darkness (lights extend it)
   const defaultVision = presetId =>
@@ -220,8 +235,10 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
      --------------------------------------------------------- */
   let saveTimer = null;
   function save() {
+    if (VIEW_MODE) return; // the scene window is read-only
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
+      broadcastState();
       try {
         localStorage.setItem(STORE_KEY, JSON.stringify({
           maps: state.maps, activeMapId: state.activeMapId, seq: state.seq,
@@ -244,7 +261,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     return {
       id: p.id, tag: p.tag, presetId: p.presetId, name: p.name,
       color: p.color, img: p.img || null,
-      hp, hpMax, hidden: !!p.hidden, vision, x: p.x, y: p.y,
+      hp, hpMax, hidden: !!p.hidden, revealed: !!p.revealed, vision, x: p.x, y: p.y,
     };
   }
   function normMap(m) {
@@ -549,6 +566,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     let needPreload = false;
     for (const p of m.pieces) {
       if (p.hidden) continue; // hidden pieces live only in the sidebar
+      if (VIEW_MODE && p.tag === "enemy" && !p.revealed) continue; // scene shows only revealed enemies
       if (dark && p.tag === "enemy" && !seenByPlayers(p, reveal)) continue; // unseen in the dark
       const down = p.hpMax > 0 && p.hp <= 0;
       const el = document.createElement("div");
@@ -578,6 +596,13 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
         hp.className = "tk-hp";
         hp.textContent = `${p.hp}/${p.hpMax}`;
         el.appendChild(hp);
+      }
+      if (!VIEW_MODE && p.tag === "enemy" && p.revealed) {
+        const eye = document.createElement("span");
+        eye.className = "tk-view";
+        eye.title = "Revealed on View Scene";
+        eye.textContent = "👁";
+        el.appendChild(eye);
       }
       tokenLayer.appendChild(el);
     }
@@ -705,7 +730,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     const m = cur();
     visionLayer.setAttribute("width", m.worldW);
     visionLayer.setAttribute("height", m.worldH);
-    if (!state.visionShow) { visionLayer.innerHTML = ""; return; }
+    if (!state.visionShow || VIEW_MODE) { visionLayer.innerHTML = ""; return; } // cones are GM info
     const segs = mapSegments(m);
     const dark = state.lighting === "dark";
     const cap = dark ? PLAYER_DARK_RANGE : Infinity;
@@ -949,7 +974,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       id: nextId(), tag, presetId,
       name: preset.name + (same ? " " + (same + 1) : ""),
       color: preset.color, img: null,
-      hp: hpMax, hpMax, hidden: false,
+      hp: hpMax, hpMax, hidden: false, revealed: false,
       vision: defaultVision(presetId),
       x: pos.x, y: pos.y,
     };
@@ -1262,6 +1287,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
       head.innerHTML =
         `<span class="er-dot" style="background:${p.color}"></span>
          <span class="er-name">${escapeHtml(p.name || "Enemy")}</span>
+         ${p.revealed ? '<span class="er-view" title="Revealed on View Scene (select + R to hide)">👁</span>' : ""}
          <span class="er-hp">${p.hpMax > 0 ? `${Math.max(0, p.hp)}/${p.hpMax}` : "—"}</span>`;
       head.onclick = () => focusObj("piece", p.id);
       row.appendChild(head);
@@ -1424,6 +1450,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   window.addEventListener("pointercancel", onPointerUp);
 
   function onPointerDown(e) {
+    if (VIEW_MODE) return; // scene window is display-only
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (pointers.size === 2) {
       drag = null;
@@ -1577,6 +1604,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   }
   board.addEventListener("wheel", e => {
     e.preventDefault();
+    if (VIEW_MODE) return;
     zoomAround(e.clientX, e.clientY, clampScale(cur().view.scale * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
   }, { passive: false });
   board.addEventListener("contextmenu", e => e.preventDefault()); // free up right-drag for cone aim
@@ -1762,6 +1790,14 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   $("#snap-toggle").onclick = () => { cur().grid.snap = !cur().grid.snap; syncGridInputs(); save(); };
   const clampNum = (v, lo, hi, dflt) => { const n = parseFloat(v); return isNaN(n) ? dflt : Math.min(hi, Math.max(lo, n)); };
 
+  // View Scene — player-facing display window
+  $("#view-scene-btn").onclick = () => {
+    const url = location.pathname + "?view=1";
+    const w = window.open(url, "fieldmap-scene", "width=1280,height=800");
+    if (w) { w.focus(); toast("Scene opened — drag it to the player screen, double-click it for fullscreen."); }
+    else toast("Popup blocked — allow popups for this page.", true);
+  };
+
   // Zoom
   $("#zoom-in").onclick = () => zoomCenter(1.2);
   $("#zoom-out").onclick = () => zoomCenter(1 / 1.2);
@@ -1939,6 +1975,7 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
 
   // Keyboard
   window.addEventListener("keydown", e => {
+    if (VIEW_MODE) return; // scene window: no shortcuts (F11/dblclick for fullscreen)
     if (!dialogModal.hidden) {
       if (e.key === "Enter") { e.preventDefault(); dlgOk.onclick(); }
       else if (e.key === "Escape") { e.preventDefault(); dlgCancel.onclick(); }
@@ -1966,7 +2003,18 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     else if (e.key === "ArrowRight") { e.preventDefault(); cycleEnemy(1); }
     else if (e.key === "ArrowLeft") { e.preventDefault(); cycleEnemy(-1); }
     else if (e.key === "v" || e.key === "V") { e.preventDefault(); toggleSelectedVisibility(); }
+    else if (e.key === "r" || e.key === "R") { e.preventDefault(); toggleSelectedReveal(); }
   });
+  // R: reveal/conceal the selected enemy on the View Scene window
+  function toggleSelectedReveal() {
+    const m = cur();
+    if (!m.selected || m.selected.kind !== "piece") return;
+    const p = m.pieces.find(o => o.id === m.selected.id);
+    if (!p || p.tag !== "enemy") return;
+    p.revealed = !p.revealed;
+    renderTokens(); renderSidebar(); save();
+    toast(p.revealed ? `${p.name || "Enemy"} revealed on scene` : `${p.name || "Enemy"} hidden from scene`);
+  }
 
   /* ---------------------------------------------------------
      ENEMY CYCLING (arrow keys) + visibility (V)
@@ -2092,6 +2140,40 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   openEditor();
   const m0 = cur();
   if (!m0.bg && !m0.pieces.length && !m0.shapes.length) fitView();
-  // images: migrate any legacy inline images out of localStorage, load refs, clean orphans
-  migrateInlineImages().then(() => preloadImages(cur())).then(gcImages);
+
+  if (VIEW_MODE) {
+    // ---- player-facing scene window: strip UI, auto-fit, live-sync ----
+    document.title = "Field Map — Scene";
+    document.body.classList.add("view-mode");
+    fitView();
+    preloadImages(cur()); // read-only: no migration or GC from this window
+    let fitTimer = null;
+    window.addEventListener("resize", () => { clearTimeout(fitTimer); fitTimer = setTimeout(fitView, 120); });
+    document.addEventListener("dblclick", () => {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else document.documentElement.requestFullscreen?.();
+    });
+    if (syncChannel) {
+      syncChannel.onmessage = ev => {
+        const msg = ev.data || {};
+        if (msg.type !== "state") return;
+        adopt(msg.data);
+        applyLighting();
+        renderAll();
+        fitView();
+      };
+      syncChannel.postMessage({ type: "hello" }); // ask the main window for fresh state
+    }
+    // fallback sync path: storage events fire in this window whenever the main window saves
+    window.addEventListener("storage", ev => {
+      if (ev.key !== STORE_KEY || !ev.newValue) return;
+      try { adopt(JSON.parse(ev.newValue)); } catch (e) { return; }
+      applyLighting(); renderAll(); fitView();
+    });
+  } else {
+    // main window: answer scene windows asking for state
+    if (syncChannel) syncChannel.onmessage = ev => { if ((ev.data || {}).type === "hello") broadcastState(); };
+    // images: migrate any legacy inline images out of localStorage, load refs, clean orphans
+    migrateInlineImages().then(() => preloadImages(cur())).then(gcImages);
+  }
 })();
