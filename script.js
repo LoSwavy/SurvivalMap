@@ -176,6 +176,18 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     return {
       maps: state.maps, activeMapId: state.activeMapId, seq: state.seq,
       lighting: state.lighting, visionShow: state.visionShow,
+      viewport: viewportPayload(),
+    };
+  }
+  // the main window's visible map region, in world units (screen-size independent)
+  function viewportPayload() {
+    const r = board.getBoundingClientRect(), v = cur().view;
+    if (!r.width || !r.height) return null;
+    return {
+      cx: (r.width / 2 - v.tx) / v.scale,
+      cy: (r.height / 2 - v.ty) / v.scale,
+      ww: r.width / v.scale,
+      wh: r.height / v.scale,
     };
   }
   function broadcastState() {
@@ -465,9 +477,17 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
   /* ---------------------------------------------------------
      RENDER
      --------------------------------------------------------- */
+  let viewCastTimer = null;
   function applyView() {
     const v = cur().view;
     world.style.transform = `translate(${v.tx}px, ${v.ty}px) scale(${v.scale})`;
+    // mirror pan/zoom to any open scene window (throttled)
+    if (!VIEW_MODE && syncChannel && !viewCastTimer) {
+      viewCastTimer = setTimeout(() => {
+        viewCastTimer = null;
+        syncChannel.postMessage({ type: "view", data: viewportPayload() });
+      }, 40);
+    }
   }
 
   function renderBg() {
@@ -2147,8 +2167,27 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     document.body.classList.add("view-mode");
     fitView();
     preloadImages(cur()); // read-only: no migration or GC from this window
+    // Follow the GM's viewport: same world center, scaled so the scene
+    // shows at least everything the main window shows (letterboxed if
+    // the window shapes differ).
+    let lastViewport = null;
+    function applyRemoteView(vp) {
+      if (!vp) { fitView(); return; }
+      lastViewport = vp;
+      const r = board.getBoundingClientRect();
+      if (!r.width || !r.height) return;
+      const s = Math.min(r.width / vp.ww, r.height / vp.wh);
+      const v = cur().view;
+      v.scale = s;
+      v.tx = r.width / 2 - vp.cx * s;
+      v.ty = r.height / 2 - vp.cy * s;
+      applyView();
+    }
     let fitTimer = null;
-    window.addEventListener("resize", () => { clearTimeout(fitTimer); fitTimer = setTimeout(fitView, 120); });
+    window.addEventListener("resize", () => {
+      clearTimeout(fitTimer);
+      fitTimer = setTimeout(() => { lastViewport ? applyRemoteView(lastViewport) : fitView(); }, 120);
+    });
     document.addEventListener("dblclick", () => {
       if (document.fullscreenElement) document.exitFullscreen();
       else document.documentElement.requestFullscreen?.();
@@ -2156,11 +2195,12 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     if (syncChannel) {
       syncChannel.onmessage = ev => {
         const msg = ev.data || {};
+        if (msg.type === "view") { applyRemoteView(msg.data); return; }
         if (msg.type !== "state") return;
         adopt(msg.data);
         applyLighting();
         renderAll();
-        fitView();
+        applyRemoteView(msg.data.viewport || lastViewport);
       };
       syncChannel.postMessage({ type: "hello" }); // ask the main window for fresh state
     }
@@ -2168,7 +2208,8 @@ Cohesion: squad ignores morale while it lives; its death triggers a morale check
     window.addEventListener("storage", ev => {
       if (ev.key !== STORE_KEY || !ev.newValue) return;
       try { adopt(JSON.parse(ev.newValue)); } catch (e) { return; }
-      applyLighting(); renderAll(); fitView();
+      applyLighting(); renderAll();
+      lastViewport ? applyRemoteView(lastViewport) : fitView();
     });
   } else {
     // main window: answer scene windows asking for state
