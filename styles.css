@@ -390,6 +390,29 @@ input[type=range]:focus { outline: none; }
 input[type=range]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px var(--green-glow); }
 input[type=range]:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 3px var(--green-glow); }
 
+/* ====================== VIEW SCENE (player display) ====================== */
+body.view-mode .toolbar,
+body.view-mode .toolbar-reopen,
+body.view-mode .tab-strip,
+body.view-mode .right-rail,
+body.view-mode .draw-bar,
+body.view-mode .objects-panel,
+body.view-mode .modal-overlay,
+body.view-mode .toast,
+body.view-mode .board-hint { display: none !important; }
+body.view-mode .board { cursor: default; }
+body.view-mode .tk-hp { display: none; } /* HP numbers are GM info */
+
+/* main-window badge: enemy is revealed on the scene */
+.tk-view {
+  position: absolute; top: -7px; right: -7px;
+  font-size: 11px; line-height: 1;
+  background: rgba(16,18,8,0.85); border: 1px solid var(--line);
+  border-radius: 50%; padding: 2px;
+  pointer-events: none;
+}
+.er-view { font-size: 0.72rem; flex: 0 0 auto; }
+
 /* ====================== TOAST ====================== */
 .toast {
   position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%);
